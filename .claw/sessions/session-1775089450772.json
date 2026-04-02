@@ -1,0 +1,1 @@
+{"messages":[{"blocks":[{"text":"Reply with exactly one word: ok","type":"text"}],"role":"user"},{"blocks":[{"text":"ok","type":"text"}],"role":"assistant","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":0,"output_tokens":0}}],"version":1}

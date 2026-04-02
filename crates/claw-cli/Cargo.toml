@@ -1,0 +1,33 @@
+[package]
+name = "claw-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "claw"
+path = "src/main.rs"
+
+[dependencies]
+api = { path = "../api" }
+commands = { path = "../commands" }
+compat-harness = { path = "../compat-harness" }
+crossterm = "0.28"
+dirs = "6"
+eframe = "0.31"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+pulldown-cmark = "0.13"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+rustyline = "15"
+runtime = { path = "../runtime" }
+plugins = { path = "../plugins" }
+serde.workspace = true
+serde_json.workspace = true
+syntect = "5"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tools = { path = "../tools" }
+
+[lints]
+workspace = true
