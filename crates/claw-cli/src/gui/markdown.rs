@@ -3,14 +3,22 @@
 use eframe::egui;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-pub fn show_markdown(ui: &mut egui::Ui, text: &str, base_size: f32, dark: bool) {
-    let body = egui::Color32::from_gray(if dark { 230 } else { 30 });
-    let code_bg = if dark {
-        egui::Color32::from_rgb(28, 30, 38)
-    } else {
-        egui::Color32::from_rgb(245, 245, 248)
-    };
-    let heading_col = egui::Color32::from_rgb(120, 170, 255);
+/// Per-theme markdown colors (from `ClawTheme` in the app).
+#[derive(Clone, Copy)]
+pub struct MarkdownTheme {
+    pub body: egui::Color32,
+    pub code_bg: egui::Color32,
+    pub code_stroke: egui::Color32,
+    pub heading: egui::Color32,
+}
+
+pub fn show_markdown(ui: &mut egui::Ui, text: &str, base_size: f32, theme: &MarkdownTheme) {
+    let MarkdownTheme {
+        body,
+        code_bg,
+        code_stroke,
+        heading: heading_col,
+    } = *theme;
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
@@ -54,17 +62,10 @@ pub fn show_markdown(ui: &mut egui::Ui, text: &str, base_size: f32, dark: bool) 
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                let stroke = egui::Stroke::new(
-                    1.0,
-                    if dark {
-                        egui::Color32::from_rgb(55, 60, 75)
-                    } else {
-                        egui::Color32::from_rgb(220, 225, 235)
-                    },
-                );
+                let stroke = egui::Stroke::new(1.0, code_stroke);
                 egui::Frame::default()
                     .fill(code_bg)
-                    .corner_radius(8)
+                    .corner_radius(10)
                     .stroke(stroke)
                     .inner_margin(10)
                     .show(ui, |ui| {

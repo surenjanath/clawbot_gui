@@ -4,6 +4,10 @@ Claw Code is a local coding-agent CLI implemented in safe Rust. It is **Claude C
 
 The Rust workspace is the current main product surface. The `claw` binary provides interactive sessions, one-shot prompts, workspace-aware tools, local agent workflows, and plugin-capable operation from a single workspace.
 
+## Main UI
+
+![Claw Code main interface](docs/screenshot/Main_UI.png)
+
 ## About this copy
 
 This tree comes from the original open-source project **[instructkr/claw-code](https://github.com/instructkr/claw-code)**. What you see here is a **personal play / sandbox** extract focused on the Rust workspace and GUI—not an official fork announcement or a replacement for upstream. Day-to-day edits were done with **[Cursor](https://cursor.com)** and other usual dev tools (Rust toolchain, Git, and whatever else was handy); it is experimental tinkering on top of someone else’s excellent foundation.

@@ -335,6 +335,12 @@ pub fn parse_sse_data_json_line(payload: &str) -> Option<String> {
         if let Some(s) = openai_delta_content(delta) {
             return Some(s);
         }
+        // Some OpenAI-compatible servers nest content under `delta.message`.
+        if let Some(msg) = delta.get("message") {
+            if let Some(s) = openai_delta_content(msg) {
+                return Some(s);
+            }
+        }
     }
     None
 }

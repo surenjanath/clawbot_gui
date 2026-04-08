@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use eframe::epaint::{CornerRadius, Margin, Shadow, Vec2};
+use eframe::epaint::{CornerRadius, Margin, Mesh, Shadow, Shape, Vec2};
 use reqwest::blocking::Client;
 use super::backend::GuiBackend;
 use super::markdown;
@@ -64,7 +64,8 @@ enum GuiMessage {
 
 #[derive(Clone, Copy)]
 struct ClawTheme {
-    bg: egui::Color32,
+    chat_bg_top: egui::Color32,
+    chat_bg_bottom: egui::Color32,
     panel: egui::Color32,
     elevated: egui::Color32,
     input: egui::Color32,
@@ -72,6 +73,7 @@ struct ClawTheme {
     accent_soft: egui::Color32,
     user_bubble: egui::Color32,
     assistant_bubble: egui::Color32,
+    user_message_text: egui::Color32,
     border: egui::Color32,
     success: egui::Color32,
     error: egui::Color32,
@@ -80,77 +82,304 @@ struct ClawTheme {
     text: egui::Color32,
     text_muted: egui::Color32,
     text_dim: egui::Color32,
+    md_code_bg: egui::Color32,
+    md_code_stroke: egui::Color32,
+    md_heading: egui::Color32,
+    md_body: egui::Color32,
     bubble_shadow: Shadow,
+    logo_shadow: Shadow,
 }
 
 fn claw_theme(dark: bool) -> ClawTheme {
     if dark {
+        // OLED-style black / zinc — no blue cast; accent is neutral light for contrast.
         ClawTheme {
-            bg: egui::Color32::from_rgb(11, 15, 23),
-            panel: egui::Color32::from_rgb(21, 26, 35),
-            elevated: egui::Color32::from_rgb(28, 34, 46),
-            input: egui::Color32::from_rgb(17, 22, 31),
-            accent: egui::Color32::from_rgb(56, 189, 248),
-            accent_soft: egui::Color32::from_rgba_unmultiplied(56, 189, 248, 55),
-            user_bubble: egui::Color32::from_rgb(8, 103, 136),
-            assistant_bubble: egui::Color32::from_rgb(32, 38, 52),
-            border: egui::Color32::from_rgb(48, 55, 70),
-            success: egui::Color32::from_rgb(74, 222, 128),
-            error: egui::Color32::from_rgb(248, 113, 113),
-            warn: egui::Color32::from_rgb(251, 191, 36),
-            log_bg: egui::Color32::from_rgb(14, 18, 26),
-            text: egui::Color32::from_rgb(238, 242, 250),
-            text_muted: egui::Color32::from_rgb(154, 164, 178),
-            text_dim: egui::Color32::from_rgb(100, 112, 132),
+            chat_bg_top: egui::Color32::from_rgb(14, 14, 14),
+            chat_bg_bottom: egui::Color32::from_rgb(4, 4, 4),
+            panel: egui::Color32::from_rgb(10, 10, 10),
+            elevated: egui::Color32::from_rgb(26, 26, 28),
+            input: egui::Color32::from_rgb(6, 6, 8),
+            accent: egui::Color32::from_rgb(235, 235, 240),
+            accent_soft: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            user_bubble: egui::Color32::from_rgb(28, 28, 32),
+            assistant_bubble: egui::Color32::from_rgb(16, 16, 18),
+            user_message_text: egui::Color32::from_rgb(248, 248, 250),
+            border: egui::Color32::from_rgb(56, 56, 62),
+            success: egui::Color32::from_rgb(130, 220, 150),
+            error: egui::Color32::from_rgb(255, 110, 110),
+            warn: egui::Color32::from_rgb(240, 190, 90),
+            log_bg: egui::Color32::from_rgb(6, 6, 6),
+            text: egui::Color32::from_rgb(240, 240, 245),
+            text_muted: egui::Color32::from_rgb(170, 170, 178),
+            text_dim: egui::Color32::from_rgb(115, 115, 125),
+            md_code_bg: egui::Color32::from_rgb(8, 8, 10),
+            md_code_stroke: egui::Color32::from_rgb(48, 48, 54),
+            md_heading: egui::Color32::from_rgb(250, 250, 252),
+            md_body: egui::Color32::from_rgb(225, 225, 230),
             bubble_shadow: Shadow {
-                offset: [0, 2],
-                blur: 14,
+                offset: [0, 8],
+                blur: 24,
                 spread: 0,
-                color: egui::Color32::from_black_alpha(55),
+                color: egui::Color32::from_black_alpha(200),
+            },
+            logo_shadow: Shadow {
+                offset: [0, 6],
+                blur: 22,
+                spread: 0,
+                color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),
             },
         }
     } else {
         ClawTheme {
-            bg: egui::Color32::from_rgb(248, 250, 252),
+            chat_bg_top: egui::Color32::from_rgb(255, 254, 252),
+            chat_bg_bottom: egui::Color32::from_rgb(241, 246, 250),
             panel: egui::Color32::from_rgb(255, 255, 255),
-            elevated: egui::Color32::from_rgb(241, 245, 249),
+            elevated: egui::Color32::from_rgb(236, 242, 247),
             input: egui::Color32::from_rgb(255, 255, 255),
-            accent: egui::Color32::from_rgb(2, 132, 199),
-            accent_soft: egui::Color32::from_rgb(224, 242, 254),
-            user_bubble: egui::Color32::from_rgb(7, 89, 133),
-            assistant_bubble: egui::Color32::from_rgb(230, 233, 239),
-            border: egui::Color32::from_rgb(203, 213, 225),
-            success: egui::Color32::from_rgb(22, 163, 74),
-            error: egui::Color32::from_rgb(220, 38, 38),
-            warn: egui::Color32::from_rgb(217, 119, 6),
-            log_bg: egui::Color32::from_rgb(252, 252, 254),
-            text: egui::Color32::from_rgb(15, 23, 42),
-            text_muted: egui::Color32::from_rgb(71, 85, 105),
-            text_dim: egui::Color32::from_rgb(148, 163, 184),
+            accent: egui::Color32::from_rgb(0, 122, 112),
+            accent_soft: egui::Color32::from_rgb(220, 244, 240),
+            user_bubble: egui::Color32::from_rgb(0, 106, 98),
+            assistant_bubble: egui::Color32::from_rgb(232, 238, 244),
+            user_message_text: egui::Color32::from_rgb(255, 255, 255),
+            border: egui::Color32::from_rgb(198, 208, 220),
+            success: egui::Color32::from_rgb(22, 140, 72),
+            error: egui::Color32::from_rgb(200, 48, 48),
+            warn: egui::Color32::from_rgb(180, 100, 20),
+            log_bg: egui::Color32::from_rgb(250, 252, 254),
+            text: egui::Color32::from_rgb(20, 32, 48),
+            text_muted: egui::Color32::from_rgb(70, 88, 110),
+            text_dim: egui::Color32::from_rgb(120, 138, 158),
+            md_code_bg: egui::Color32::from_rgb(246, 248, 252),
+            md_code_stroke: egui::Color32::from_rgb(210, 218, 230),
+            md_heading: egui::Color32::from_rgb(0, 110, 100),
+            md_body: egui::Color32::from_rgb(30, 42, 58),
             bubble_shadow: Shadow {
-                offset: [0, 2],
-                blur: 12,
+                offset: [0, 4],
+                blur: 18,
                 spread: 0,
-                color: egui::Color32::from_black_alpha(18),
+                color: egui::Color32::from_rgba_unmultiplied(40, 70, 90, 22),
+            },
+            logo_shadow: Shadow {
+                offset: [0, 6],
+                blur: 20,
+                spread: 0,
+                color: egui::Color32::from_rgba_unmultiplied(0, 122, 112, 30),
             },
         }
     }
 }
 
-fn settings_section(ui: &mut egui::Ui, title: &str, text: egui::Color32, band: egui::Color32) {
-    ui.add_space(4.0);
+/// Vertical gradient mesh behind the chat scroll area.
+fn paint_chat_canvas_gradient(painter: &egui::Painter, rect: egui::Rect, top: egui::Color32, bottom: egui::Color32) {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return;
+    }
+    let mut mesh = Mesh::default();
+    let i = mesh.vertices.len() as u32;
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(i, i + 1, i + 2);
+    mesh.add_triangle(i, i + 2, i + 3);
+    painter.add(Shape::mesh(mesh));
+}
+
+fn settings_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    text: egui::Color32,
+    band: egui::Color32,
+    stripe: egui::Color32,
+) {
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        egui::Frame::new()
+            .fill(stripe)
+            .corner_radius(3)
+            .inner_margin(Margin::ZERO)
+            .show(ui, |ui| {
+                ui.set_min_size(Vec2::new(4.0, 28.0));
+            });
+        ui.add_space(10.0);
+        egui::Frame::new()
+            .fill(band)
+            .corner_radius(10)
+            .inner_margin(Margin::symmetric(12, 8))
+            .stroke(egui::Stroke::new(
+                1.0,
+                stripe.linear_multiply(0.4),
+            ))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .font(egui::FontId::proportional(14.0))
+                        .strong()
+                        .color(text),
+                );
+            });
+    });
+    ui.add_space(8.0);
+}
+
+/// First-launch assistant content — rendered as a card instead of markdown.
+const GUI_WELCOME_MARKER: &str = "__claw_gui_welcome__";
+
+fn settings_field_caption(ui: &mut egui::Ui, t: &ClawTheme, text: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(13.0)
+            .strong()
+            .color(t.text),
+    );
+}
+
+fn render_welcome_card(ui: &mut egui::Ui, t: &ClawTheme, base: f32) {
+    let tile = |ui: &mut egui::Ui, icon: &str, title: &str, body: &str| {
+        egui::Frame::new()
+            .fill(t.input)
+            .corner_radius(12)
+            .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.65)))
+            .inner_margin(Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{icon}  {title}"))
+                        .size((base - 1.0).max(12.0))
+                        .strong()
+                        .color(t.accent),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(body).size(12.0).color(t.text_muted)).wrap(),
+                );
+            });
+        ui.add_space(10.0);
+    };
+
     egui::Frame::new()
-        .fill(band)
-        .corner_radius(8)
-        .inner_margin(Margin::symmetric(10, 6))
+        .fill(t.assistant_bubble)
+        .corner_radius(22)
+        .stroke(egui::Stroke::new(1.0, t.accent.linear_multiply(0.45)))
+        .inner_margin(Margin::symmetric(28, 24))
+        .shadow(t.bubble_shadow)
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(title)
-                    .font(egui::FontId::proportional(13.0))
-                    .color(text),
+                egui::RichText::new("Welcome")
+                    .font(egui::FontId::proportional(base + 7.0))
+                    .strong()
+                    .color(t.text),
             );
+            ui.add_space(8.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "Local Ollama chat with streaming, built-in tools, optional MCP, research, and workspace file access.",
+                    )
+                    .size(13.5)
+                    .color(t.text_muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(18.0);
+            ui.columns(2, |cols| {
+                tile(
+                    &mut cols[0],
+                    "💬",
+                    "Chat",
+                    "Responses stream live when “Stream responses” is on and tools are off in Settings.",
+                );
+                tile(
+                    &mut cols[1],
+                    "🔧",
+                    "Tools",
+                    "Enable in Settings; Refresh MCP loads servers from your Claw config.",
+                );
+                tile(
+                    &mut cols[0],
+                    "🌐",
+                    "Research",
+                    "Optional WebFetch/WebSearch when enabled (uses the network).",
+                );
+                tile(
+                    &mut cols[1],
+                    "📁",
+                    "Workspace",
+                    "Read-only file + glob search under the folder you choose.",
+                );
+            });
+            egui::Frame::new()
+                .fill(t.elevated)
+                .corner_radius(10)
+                .inner_margin(Margin::symmetric(14, 11))
+                .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.75)))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "Toolbar: Refresh loads models · Settings configures endpoint, model, streaming, tools, and MCP.",
+                            )
+                            .size(12.5)
+                            .color(t.text_muted),
+                        )
+                        .wrap(),
+                    );
+                });
         });
-    ui.add_space(4.0);
+}
+
+fn toolbar_standard_btn(ui: &mut egui::Ui, label: &str, t: &ClawTheme, w: f32, h: f32) -> egui::Response {
+    ui.add_sized(
+        Vec2::new(w, h),
+        egui::Button::new(egui::RichText::new(label).size(12.5).color(t.text))
+            .fill(t.input)
+            .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.88)))
+            .corner_radius(8.0),
+    )
+}
+
+fn toolbar_settings_btn(ui: &mut egui::Ui, panel_open: bool, t: &ClawTheme, w: f32, h: f32) -> egui::Response {
+    let (label, fill, stroke) = if panel_open {
+        (
+            "Hide panel",
+            t.accent_soft,
+            egui::Stroke::new(1.5, t.accent),
+        )
+    } else {
+        (
+            "Settings",
+            t.input,
+            egui::Stroke::new(1.0, t.border.linear_multiply(0.88)),
+        )
+    };
+    ui.add_sized(
+        Vec2::new(w, h),
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(12.5)
+                .color(t.text)
+                .strong(),
+        )
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(8.0),
+    )
+}
+
+fn toolbar_logs_btn(ui: &mut egui::Ui, active: bool, t: &ClawTheme, w: f32, h: f32) -> egui::Response {
+    let (fill, stroke) = if active {
+        (t.accent_soft, egui::Stroke::new(1.5, t.accent))
+    } else {
+        (t.input, egui::Stroke::new(1.0, t.border.linear_multiply(0.88)))
+    };
+    ui.add_sized(
+        Vec2::new(w, h),
+        egui::Button::new(egui::RichText::new("Logs").size(12.5).color(t.text))
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(8.0),
+    )
 }
 
 pub struct ClawGui {
@@ -175,7 +404,8 @@ pub struct ClawGui {
     session_start: Instant,
     error_message: String,
     show_error: bool,
-    copied_message: Option<usize>,
+    /// Brief "Copied" feedback: message id + end time.
+    copy_flash: Option<(usize, Instant)>,
     tool_probe_summary: String,
     tool_probe_supports: Option<bool>,
     tool_probe_raw: String,
@@ -203,16 +433,13 @@ impl ClawGui {
         let cfg = load_config().unwrap_or_default();
 
         let mut gui = Self {
-            messages: vec![ChatMessage::assistant(
-                "🦞 Welcome to Claw Code (Ollama)\n\n• Multi-turn chat — **streaming** when tools are off; **batch** mode runs research + tool loops\n• **Built-in tools**: time, word count, math\n• **Research** (optional): `gui_web_fetch`, `gui_web_search` (WebFetch/WebSearch from Claw)\n• **Workspace** (optional): read-only file + glob under the folder in Settings\n• **MCP**: enable in Settings, then **Refresh MCP** to load stdio servers from your Claw config\n• **Probe tool calling** checks whether the model speaks OpenAI-style `tool_calls`\n\nUse **Test connection**, pick a model, enable what you need in **Settings**, then chat.".to_string(),
-                0,
-            )],
+            messages: vec![ChatMessage::assistant(GUI_WELCOME_MARKER.to_string(), 0)],
             input: String::new(),
             settings: cfg.settings,
             prompt_presets: cfg.prompt_presets,
             session_only_prompt: false,
             session_system_prompt: String::new(),
-            show_settings: true,
+            show_settings: false,
             show_logs: false,
             is_loading: false,
             is_probing_tools: false,
@@ -226,7 +453,7 @@ impl ClawGui {
             session_start: Instant::now(),
             error_message: String::new(),
             show_error: false,
-            copied_message: None,
+            copy_flash: None,
             tool_probe_summary: "Not tested yet — click “Probe tool calling”.".to_string(),
             tool_probe_supports: None,
             tool_probe_raw: String::new(),
@@ -319,13 +546,13 @@ impl ClawGui {
             55,
         );
         visuals.selection.stroke = egui::Stroke::new(1.0, t.accent);
-        visuals.window_corner_radius = CornerRadius::same(10);
-        visuals.menu_corner_radius = CornerRadius::same(8);
-        visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
-        visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
-        visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
-        visuals.widgets.active.corner_radius = CornerRadius::same(6);
-        visuals.widgets.open.corner_radius = CornerRadius::same(6);
+        visuals.window_corner_radius = CornerRadius::same(12);
+        visuals.menu_corner_radius = CornerRadius::same(10);
+        visuals.widgets.noninteractive.corner_radius = CornerRadius::same(8);
+        visuals.widgets.inactive.corner_radius = CornerRadius::same(8);
+        visuals.widgets.hovered.corner_radius = CornerRadius::same(8);
+        visuals.widgets.active.corner_radius = CornerRadius::same(8);
+        visuals.widgets.open.corner_radius = CornerRadius::same(8);
         visuals.popup_shadow = Shadow {
             offset: [0, 4],
             blur: 18,
@@ -898,15 +1125,27 @@ impl ClawGui {
 
     fn copy_message(&mut self, ctx: &egui::Context, id: usize) {
         if let Some(msg) = self.messages.iter().find(|m| m.id == id) {
-            self.copied_message = Some(id);
+            self.copy_flash = Some((id, Instant::now() + Duration::from_millis(1400)));
             ctx.copy_text(msg.content.clone());
+            ctx.request_repaint_after(Duration::from_millis(1500));
             self.add_log("INFO", "Copied to clipboard");
         }
     }
 
     pub(crate) fn draw_ui(&mut self, ctx: &egui::Context) {
         self.check_response(ctx);
+        if self
+            .copy_flash
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() < *until)
+        {
+            ctx.request_repaint();
+        }
         if self.is_loading || self.is_probing_tools || self.is_refreshing_mcp {
+            ctx.request_repaint();
+        }
+        // Streaming: repaint every frame so tokens + caret blink stay smooth.
+        if self.is_loading && self.stream_cancel.is_some() {
             ctx.request_repaint();
         }
 
@@ -929,48 +1168,62 @@ impl ClawGui {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 6.0;
 
-                        // Row 1: brand + status (compact row — avoid `horizontal_centered`, which
-                        // grabs the full remaining viewport height and blows up child frames.)
+                        // Row 1: brand (fixed) — status chips wrap on narrow windows.
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 10.0;
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 10.0;
-                                egui::Frame::new()
-                                    .fill(t.accent_soft)
-                                    .corner_radius(12)
-                                    .stroke(egui::Stroke::new(
-                                        1.0,
-                                        egui::Color32::from_rgba_unmultiplied(
-                                            t.accent.r(),
-                                            t.accent.g(),
-                                            t.accent.b(),
-                                            90,
-                                        ),
-                                    ))
-                                    .inner_margin(Margin::same(7))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new("🦞")
-                                                .font(egui::FontId::proportional(24.0)),
-                                        );
-                                    });
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 1.0;
+                            egui::Frame::new()
+                                .fill(t.accent_soft)
+                                .corner_radius(18)
+                                .shadow(t.logo_shadow)
+                                .stroke(egui::Stroke::new(
+                                    1.5,
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        t.accent.r(),
+                                        t.accent.g(),
+                                        t.accent.b(),
+                                        130,
+                                    ),
+                                ))
+                                .inner_margin(Margin::same(9))
+                                .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new("Claw Code")
-                                            .font(egui::FontId::proportional(18.0))
+                                        egui::RichText::new("🦞")
+                                            .font(egui::FontId::proportional(26.0)),
+                                    );
+                                });
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 5.0;
+                                    ui.label(
+                                        egui::RichText::new("Claw")
+                                            .font(egui::FontId::proportional(19.0))
                                             .strong()
                                             .color(t.text),
                                     );
                                     ui.label(
-                                        egui::RichText::new("Local chat · Ollama")
-                                            .size(11.0)
-                                            .color(t.text_dim),
+                                        egui::RichText::new("·")
+                                            .font(egui::FontId::proportional(22.0))
+                                            .color(t.accent),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("Code")
+                                            .font(egui::FontId::proportional(19.0))
+                                            .strong()
+                                            .color(t.text),
                                     );
                                 });
+                                ui.label(
+                                    egui::RichText::new("LOCAL FIRST  ·  OLLAMA")
+                                        .font(egui::FontId::monospace(10.5))
+                                        .color(t.text_dim),
+                                );
                             });
+                        });
 
-                            ui.add_space(4.0);
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
                             let (pill_bg, pill_fg, pill_txt) = match self.connection_status {
                                 ConnectionStatus::Connected => (
                                     egui::Color32::from_rgba_unmultiplied(
@@ -1087,104 +1340,61 @@ impl ClawGui {
                             );
                         });
 
-                        // Row 2: actions — right-aligned without expanding to full window height
-                        let row2_h = toolbar_h + 4.0;
+                        // Row 2: toolbar — consistent outlined buttons; Settings / Logs use accent when active.
+                        let row2_h = toolbar_h + 8.0;
+                        let bh = 32.0_f32;
                         ui.allocate_ui_with_layout(
                             Vec2::new(ui.available_width(), row2_h),
                             egui::Layout::right_to_left(egui::Align::Center)
                                 .with_cross_align(egui::Align::Center),
                             |ui| {
-                                    ui.spacing_mut().item_spacing.x = 6.0;
-                                    let settings_on = self.show_settings;
-                                    let settings_lbl = if settings_on {
-                                        "Hide panel"
-                                    } else {
-                                        "Settings"
-                                    };
-                                    if ui
-                                        .add_sized(
-                                            Vec2::new(92.0, toolbar_h),
-                                            egui::SelectableLabel::new(
-                                                settings_on,
-                                                egui::RichText::new(settings_lbl).size(13.0),
-                                            ),
-                                        )
-                                        .on_hover_text("Toggle settings sidebar")
-                                        .clicked()
-                                    {
-                                        self.show_settings = !self.show_settings;
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            Vec2::new(78.0, toolbar_h),
-                                            egui::Button::new(
-                                                egui::RichText::new("Refresh").color(t.accent),
-                                            ),
-                                        )
-                                        .on_hover_text("Test Ollama connection & load models")
-                                        .clicked()
-                                    {
-                                        self.test_connection();
-                                    }
-                                    let mcp_btn = egui::Button::new(
-                                        egui::RichText::new(if self.is_refreshing_mcp {
-                                            "MCP…"
-                                        } else {
-                                            "Refresh MCP"
-                                        })
-                                        .color(t.accent),
-                                    );
-                                    if ui
-                                        .add_enabled(!self.is_refreshing_mcp, mcp_btn)
-                                        .on_hover_text(
-                                            "Discover stdio MCP tools from your Claw config (same as CLI)",
-                                        )
-                                        .clicked()
-                                    {
-                                        self.refresh_mcp_catalog();
-                                    }
-                                    if self.is_refreshing_mcp {
-                                        ui.spinner();
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            Vec2::new(88.0, toolbar_h),
-                                            egui::Button::new(
-                                                egui::RichText::new("Clear chat")
-                                                    .color(t.text_muted),
-                                            ),
-                                        )
-                                        .on_hover_text("Clear messages")
-                                        .clicked()
-                                    {
-                                        self.clear_chat();
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            Vec2::new(84.0, toolbar_h),
-                                            egui::Button::new(
-                                                egui::RichText::new("New chat")
-                                                    .color(t.text_muted),
-                                            ),
-                                        )
-                                        .on_hover_text("Start a fresh thread")
-                                        .clicked()
-                                    {
-                                        self.new_chat();
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            Vec2::new(64.0, toolbar_h),
-                                            egui::SelectableLabel::new(
-                                                self.show_logs,
-                                                egui::RichText::new("Logs").size(13.0),
-                                            ),
-                                        )
-                                        .on_hover_text("Toggle live log panel")
-                                        .clicked()
-                                    {
-                                        self.show_logs = !self.show_logs;
-                                    }
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if toolbar_settings_btn(ui, self.show_settings, &t, 102.0, bh)
+                                    .on_hover_text("Toggle settings sidebar")
+                                    .clicked()
+                                {
+                                    self.show_settings = !self.show_settings;
+                                }
+                                if toolbar_standard_btn(ui, "Refresh", &t, 88.0, bh)
+                                    .on_hover_text("Test Ollama connection & load models")
+                                    .clicked()
+                                {
+                                    self.test_connection();
+                                }
+                                let mcp_lbl = if self.is_refreshing_mcp {
+                                    "MCP…"
+                                } else {
+                                    "Refresh MCP"
+                                };
+                                let mcp_ir = ui.add_enabled_ui(!self.is_refreshing_mcp, |ui| {
+                                    toolbar_standard_btn(ui, mcp_lbl, &t, 112.0, bh).on_hover_text(
+                                        "Discover stdio MCP tools from your Claw config (same as CLI)",
+                                    )
+                                });
+                                if mcp_ir.inner.clicked() {
+                                    self.refresh_mcp_catalog();
+                                }
+                                if self.is_refreshing_mcp {
+                                    ui.spinner();
+                                }
+                                if toolbar_standard_btn(ui, "Clear chat", &t, 96.0, bh)
+                                    .on_hover_text("Clear messages")
+                                    .clicked()
+                                {
+                                    self.clear_chat();
+                                }
+                                if toolbar_standard_btn(ui, "New chat", &t, 92.0, bh)
+                                    .on_hover_text("Start a fresh thread")
+                                    .clicked()
+                                {
+                                    self.new_chat();
+                                }
+                                if toolbar_logs_btn(ui, self.show_logs, &t, 68.0, bh)
+                                    .on_hover_text("Toggle live log panel")
+                                    .clicked()
+                                {
+                                    self.show_logs = !self.show_logs;
+                                }
                             },
                         );
                     });
@@ -1310,59 +1520,73 @@ impl ClawGui {
 
         if self.show_settings {
             egui::SidePanel::right("settings")
-                .min_width(340.0)
+                .min_width(368.0)
                 .show(ctx, |ui| {
                     egui::Frame::default()
                         .fill(t.panel)
                         .stroke(egui::Stroke::new(1.0, t.border))
-                        .inner_margin(14)
+                        .inner_margin(20)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("Settings")
-                                        .font(egui::FontId::proportional(18.0))
-                                        .strong()
-                                        .color(t.text),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Settings")
+                                            .font(egui::FontId::proportional(22.0))
+                                            .strong()
+                                            .color(t.text),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new("  ◆")
+                                            .size(11.0)
+                                            .color(t.accent),
+                                    );
+                                });
                                 ui.label(
                                     egui::RichText::new(format!("Backend · {}", self.backend.label()))
                                         .color(t.text_muted)
-                                        .size(12.0),
+                                        .size(13.0),
                                 );
+                                ui.add_space(14.0);
+                                ui.separator();
                                 ui.add_space(10.0);
+
+                                settings_section(ui, "Appearance", t.text, t.elevated, t.accent);
+                                egui::Frame::new()
+                                    .fill(t.elevated)
+                                    .corner_radius(12)
+                                    .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.55)))
+                                    .inner_margin(Margin::symmetric(14, 12))
+                                    .show(ui, |ui| {
+                                        if ui
+                                            .checkbox(&mut self.settings.dark_mode, "Dark mode")
+                                            .changed()
+                                        {
+                                            settings_changed = true;
+                                        }
+                                        if ui
+                                            .add(egui::Slider::new(
+                                                &mut self.settings.font_size,
+                                                10.0..=22.0,
+                                            )
+                                            .text("Font size"))
+                                            .changed()
+                                        {
+                                            settings_changed = true;
+                                        }
+                                    });
+
+                                ui.add_space(18.0);
                                 ui.separator();
-                                ui.add_space(6.0);
+                                ui.add_space(10.0);
 
-                                settings_section(ui, "Appearance", t.text, t.elevated);
-
-                                if ui
-                                    .checkbox(&mut self.settings.dark_mode, "Dark mode")
-                                    .changed()
-                                {
-                                    settings_changed = true;
-                                }
-                                if ui
-                                    .add(egui::Slider::new(
-                                        &mut self.settings.font_size,
-                                        10.0..=22.0,
-                                    )
-                                    .text("Font size"))
-                                    .changed()
-                                {
-                                    settings_changed = true;
-                                }
-
-                                ui.add_space(12.0);
-                                ui.separator();
-                                ui.add_space(6.0);
-
-                                settings_section(ui, "Ollama", t.text, t.elevated);
-
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new("Endpoint URL")
-                                        .color(t.text_muted)
-                                        .size(12.0),
-                                ));
+                                settings_section(ui, "Ollama", t.text, t.elevated, t.accent);
+                                egui::Frame::new()
+                                    .fill(t.elevated)
+                                    .corner_radius(12)
+                                    .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.55)))
+                                    .inner_margin(Margin::symmetric(14, 12))
+                                    .show(ui, |ui| {
+                                settings_field_caption(ui, &t, "Endpoint URL");
                                 if ui
                                     .text_edit_singleline(&mut self.settings.ollama.base_url)
                                     .changed()
@@ -1370,12 +1594,8 @@ impl ClawGui {
                                     settings_changed = true;
                                 }
 
-                                ui.add_space(10.0);
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new("Model")
-                                        .color(t.text_muted)
-                                        .size(12.0),
-                                ));
+                                ui.add_space(8.0);
+                                settings_field_caption(ui, &t, "Model");
                                 egui::Frame::default()
                                     .fill(t.input)
                                     .corner_radius(8)
@@ -1406,14 +1626,14 @@ impl ClawGui {
                                     });
 
                                 ui.add_space(12.0);
-                                ui.add(egui::Label::new(
+                                ui.label(
                                     egui::RichText::new(format!(
                                         "🌡️ Temperature: {:.1}",
                                         self.settings.ollama.temperature
                                     ))
-                                    .color(egui::Color32::from_gray(140))
-                                    .size(12.0),
-                                ));
+                                    .color(t.text_muted)
+                                    .size(13.0),
+                                );
                                 if ui
                                     .add(egui::Slider::new(
                                         &mut self.settings.ollama.temperature,
@@ -1426,14 +1646,14 @@ impl ClawGui {
                                 }
 
                                 ui.add_space(8.0);
-                                ui.add(egui::Label::new(
+                                ui.label(
                                     egui::RichText::new(format!(
                                         "📝 Max Tokens: {}",
                                         self.settings.ollama.max_tokens
                                     ))
-                                    .color(egui::Color32::from_gray(140))
-                                    .size(12.0),
-                                ));
+                                    .color(t.text_muted)
+                                    .size(13.0),
+                                );
                                 if ui
                                     .add(egui::Slider::new(
                                         &mut self.settings.ollama.max_tokens,
@@ -1479,11 +1699,12 @@ impl ClawGui {
                                 {
                                     settings_changed = true;
                                 }
+                                    });
 
-                                ui.add_space(14.0);
+                                ui.add_space(18.0);
                                 ui.separator();
-                                ui.add_space(6.0);
-                                settings_section(ui, "Tools (OpenAI-style)", t.text, t.elevated);
+                                ui.add_space(10.0);
+                                settings_section(ui, "Tools (OpenAI-style)", t.text, t.elevated, t.accent);
                                 ui.add_space(4.0);
                                 if ui
                                     .checkbox(
@@ -1564,6 +1785,7 @@ impl ClawGui {
                                     "Research, workspace & MCP",
                                     t.text,
                                     t.elevated,
+                                    t.accent,
                                 );
                                 ui.add_space(4.0);
                                 if ui
@@ -1640,7 +1862,7 @@ impl ClawGui {
                                 );
 
                                 ui.add_space(12.0);
-                                settings_section(ui, "System prompt", t.text, t.elevated);
+                                settings_section(ui, "System prompt", t.text, t.elevated, t.accent);
                                 egui::Frame::default()
                                     .fill(t.input)
                                     .corner_radius(8)
@@ -1743,7 +1965,7 @@ impl ClawGui {
                                 ui.add_space(12.0);
                                 ui.separator();
                                 ui.add_space(6.0);
-                                settings_section(ui, "Session", t.text, t.elevated);
+                                settings_section(ui, "Session", t.text, t.elevated, t.accent);
                                 ui.horizontal(|ui| {
                                     if ui.button("Save session").clicked() {
                                         let _ = persist_mod::ensure_gui_dirs();
@@ -1779,7 +2001,7 @@ impl ClawGui {
                                 ui.separator();
                                 ui.add_space(6.0);
 
-                                settings_section(ui, "Statistics", t.text, t.elevated);
+                                settings_section(ui, "Statistics", t.text, t.elevated, t.accent);
                                 ui.add_space(4.0);
                                 egui::Frame::default()
                                     .fill(t.input)
@@ -1843,27 +2065,62 @@ impl ClawGui {
             self.persist_settings();
         }
 
-        egui::TopBottomPanel::bottom("input").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("input")
+            .min_height(108.0)
+            .show(ctx, |ui| {
             egui::Frame::default()
                 .fill(t.panel)
-                .stroke(egui::Stroke::new(1.0, t.border))
-                .inner_margin(Margin::symmetric(14, 12))
+                .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.9)))
+                .inner_margin(Margin::symmetric(18, 16))
                 .show(ui, |ui| {
+                    let dock = ui.max_rect();
+                    ui.painter_at(dock).rect_filled(
+                        egui::Rect::from_min_max(
+                            dock.left_top(),
+                            egui::pos2(dock.right(), dock.top() + 2.0),
+                        ),
+                        CornerRadius::ZERO,
+                        t.border.linear_multiply(0.85),
+                    );
+                    let mut send_via_enter = false;
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let full = ui.available_width();
+                        let stop_w = 78.0_f32;
+                        let send_w = 100.0_f32;
+                        let gap = 12.0_f32;
+                        let composer_w = (full - stop_w - send_w - gap * 2.0).max(200.0);
+                        let row_h = 48.0_f32;
+
                         let stop_enabled = self.is_loading && self.stream_cancel.is_some();
+                        let stop_btn = egui::Button::new(
+                            egui::RichText::new("Stop")
+                                .size(13.0)
+                                .strong()
+                                .color(if stop_enabled {
+                                    t.error
+                                } else {
+                                    t.text_dim
+                                }),
+                        )
+                        .fill(if stop_enabled {
+                            t.elevated
+                        } else {
+                            t.input
+                        })
+                        .stroke(egui::Stroke::new(
+                            1.5,
+                            if stop_enabled {
+                                t.error.linear_multiply(0.55)
+                            } else {
+                                t.border.linear_multiply(0.65)
+                            },
+                        ))
+                        .corner_radius(12.0)
+                        .min_size(Vec2::new(stop_w, row_h));
                         if ui
-                            .add_enabled(
-                                stop_enabled,
-                                egui::Button::new(egui::RichText::new("Stop").color(
-                                    if stop_enabled {
-                                        t.error
-                                    } else {
-                                        t.text_dim
-                                    },
-                                ))
-                                .min_size(Vec2::new(56.0, 36.0)),
-                            )
-                            .on_hover_text("Stop streaming (streaming mode only)")
+                            .add_enabled(stop_enabled, stop_btn)
+                            .on_hover_text("Stop streaming (available while the reply is streaming)")
                             .clicked()
                         {
                             self.stop_generation();
@@ -1871,48 +2128,90 @@ impl ClawGui {
 
                         egui::Frame::default()
                             .fill(t.input)
-                            .corner_radius(12)
-                            .stroke(egui::Stroke::new(1.0, t.border.gamma_multiply(0.7)))
-                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(14)
+                            .stroke(egui::Stroke::new(1.5, t.border.linear_multiply(0.95)))
+                            .inner_margin(Margin::symmetric(14, 12))
                             .show(ui, |ui| {
-                                let tf = egui::TextEdit::singleline(&mut self.input)
+                                ui.set_width(composer_w);
+                                ui.set_min_height(72.0);
+                                let out = egui::TextEdit::multiline(&mut self.input)
+                                    .id_salt("claw_composer")
+                                    .return_key(egui::KeyboardShortcut::new(
+                                        egui::Modifiers::SHIFT,
+                                        egui::Key::Enter,
+                                    ))
                                     .hint_text(
-                                        egui::RichText::new("Message…")
-                                            .color(t.text_dim),
+                                        egui::RichText::new(
+                                            "Write a message…  ·  Enter to send  ·  Shift+Enter new line",
+                                        )
+                                        .size(13.5)
+                                        .color(t.text_dim),
                                     )
-                                    .desired_width(ui.available_width() - 100.0)
-                                    .frame(false);
-                                ui.add(tf);
+                                    .desired_width(ui.available_width())
+                                    .desired_rows(5)
+                                    .frame(false)
+                                    .show(ui);
+                                let can_send = !self.is_loading
+                                    && !self.is_probing_tools
+                                    && !self.input.trim().is_empty();
+                                if out.response.has_focus()
+                                    && ui.ctx().input(|i| {
+                                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                                    })
+                                    && can_send
+                                {
+                                    send_via_enter = true;
+                                }
                             });
 
                         let enabled = !self.is_loading
                             && !self.is_probing_tools
-                            && !self.input.is_empty();
+                            && !self.input.trim().is_empty();
+                        let send_fg = if enabled {
+                            egui::Color32::from_rgb(12, 12, 14)
+                        } else {
+                            t.text_dim
+                        };
                         let btn = egui::Button::new(
-                            egui::RichText::new("Send").color(egui::Color32::WHITE),
+                            egui::RichText::new("Send")
+                                .size(14.0)
+                                .strong()
+                                .color(send_fg),
                         )
                         .fill(if enabled {
                             t.accent
                         } else {
-                            t.accent.gamma_multiply(0.38)
+                            t.elevated
                         })
-                        .corner_radius(10.0)
-                        .min_size(Vec2::new(78.0, 38.0));
+                        .stroke(if enabled {
+                            egui::Stroke::new(1.5, t.border.linear_multiply(0.35))
+                        } else {
+                            egui::Stroke::new(1.0, t.border.linear_multiply(0.55))
+                        })
+                        .corner_radius(12.0)
+                        .min_size(Vec2::new(send_w, row_h));
 
                         if ui.add_enabled(enabled, btn).clicked() {
                             self.send_message();
                         }
-                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) && enabled {
-                            self.send_message();
-                        }
                     });
+                    if send_via_enter {
+                        self.send_message();
+                    }
                 });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let canvas = ui.max_rect();
+            paint_chat_canvas_gradient(
+                &ui.painter_at(canvas),
+                canvas,
+                t.chat_bg_top,
+                t.chat_bg_bottom,
+            );
             egui::Frame::default()
-                .fill(t.bg)
-                .inner_margin(Margin::symmetric(14, 10))
+                .fill(egui::Color32::TRANSPARENT)
+                .inner_margin(Margin::symmetric(24, 20))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("claw_chat_scroll")
@@ -1926,7 +2225,7 @@ impl ClawGui {
 
                             let mut msgs_to_copy: Vec<usize> = Vec::new();
 
-                            for msg in &self.messages {
+                            for (mi, msg) in self.messages.iter().enumerate() {
                                 let is_user = msg.role == "user";
                                 let content = &msg.content;
                                 if is_user && content.trim().is_empty() {
@@ -1941,11 +2240,11 @@ impl ClawGui {
                                             ui.set_width(ui.available_width());
                                             egui::Frame::default()
                                                 .fill(t.user_bubble)
-                                                .corner_radius(16)
-                                                .inner_margin(Margin::symmetric(14, 12))
+                                                .corner_radius(20)
+                                                .inner_margin(Margin::symmetric(16, 13))
                                                 .stroke(egui::Stroke::new(
-                                                    1.0,
-                                                    t.border.gamma_multiply(0.55),
+                                                    1.5,
+                                                    t.border.linear_multiply(0.9),
                                                 ))
                                                 .shadow(t.bubble_shadow)
                                                 .show(ui, |ui| {
@@ -1953,7 +2252,7 @@ impl ClawGui {
                                                     ui.add(
                                                         egui::Label::new(
                                                             egui::RichText::new(content)
-                                                                .color(egui::Color32::from_gray(252))
+                                                                .color(t.user_message_text)
                                                                 .size(self.settings.font_size),
                                                         )
                                                         .wrap(),
@@ -1961,15 +2260,39 @@ impl ClawGui {
                                                 });
                                         },
                                     );
+                                } else if content == GUI_WELCOME_MARKER {
+                                    ui.add_space(10.0);
+                                    let card_w = (ui.available_width() - 12.0).min(720.0).max(320.0);
+                                    ui.allocate_ui_with_layout(
+                                        Vec2::new(card_w, 0.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            render_welcome_card(ui, &t, self.settings.font_size);
+                                        },
+                                    );
                                 } else if !content.trim().is_empty() {
+                                    let streaming_here = self.is_loading
+                                        && self.stream_cancel.is_some()
+                                        && mi + 1 == self.messages.len();
                                     let copy_id = msg.id;
+                                    let copy_flashing = self
+                                        .copy_flash
+                                        .as_ref()
+                                        .is_some_and(|(id, until)| {
+                                            *id == copy_id && Instant::now() < *until
+                                        });
+                                    let copy_lbl = if copy_flashing {
+                                        "Copied ✓"
+                                    } else {
+                                        "Copy"
+                                    };
                                     egui::Frame::default()
                                         .fill(t.assistant_bubble)
-                                        .corner_radius(16)
-                                        .inner_margin(Margin::symmetric(14, 12))
+                                        .corner_radius(18)
+                                        .inner_margin(Margin::symmetric(15, 13))
                                         .stroke(egui::Stroke::new(
                                             1.0,
-                                            t.border.gamma_multiply(0.55),
+                                            t.border.linear_multiply(0.85),
                                         ))
                                         .shadow(t.bubble_shadow)
                                         .show(ui, |ui| {
@@ -1977,15 +2300,42 @@ impl ClawGui {
                                             ui.set_width(bubble_w);
                                             ui.horizontal(|ui| {
                                                 ui.label(
+                                                    egui::RichText::new("●")
+                                                        .size(9.0)
+                                                        .color(t.accent),
+                                                );
+                                                ui.add_space(4.0);
+                                                ui.label(
                                                     egui::RichText::new("Assistant")
                                                         .size(11.0)
                                                         .color(t.text_dim),
                                                 );
+                                                if streaming_here {
+                                                    ui.add_space(6.0);
+                                                    ui.label(
+                                                        egui::RichText::new(" STREAMING ")
+                                                            .size(9.0)
+                                                            .strong()
+                                                            .color(t.panel)
+                                                            .background_color(
+                                                                t.accent.linear_multiply(0.42),
+                                                            ),
+                                                    );
+                                                }
                                                 ui.add_space(
-                                                    (ui.available_width() - 52.0).max(0.0),
+                                                    (ui.available_width() - 88.0).max(0.0),
+                                                );
+                                                let copy_btn = egui::Button::new(
+                                                    egui::RichText::new(copy_lbl)
+                                                        .size(12.0)
+                                                        .color(if copy_flashing {
+                                                            t.success
+                                                        } else {
+                                                            t.accent
+                                                        }),
                                                 );
                                                 if ui
-                                                    .small_button("Copy")
+                                                    .add(copy_btn)
                                                     .on_hover_text("Copy this message")
                                                     .clicked()
                                                 {
@@ -1997,8 +2347,31 @@ impl ClawGui {
                                                 ui,
                                                 content,
                                                 self.settings.font_size,
-                                                dark,
+                                                &markdown::MarkdownTheme {
+                                                    body: t.md_body,
+                                                    code_bg: t.md_code_bg,
+                                                    code_stroke: t.md_code_stroke,
+                                                    heading: t.md_heading,
+                                                },
                                             );
+                                            if streaming_here {
+                                                ui.add_space(2.0);
+                                                let caret_on = (ui.ctx().input(|i| i.time) * 2.4)
+                                                    as i32
+                                                    % 2
+                                                    == 0;
+                                                ui.horizontal(|ui| {
+                                                    if caret_on {
+                                                        ui.label(
+                                                            egui::RichText::new("▍")
+                                                                .font(egui::FontId::monospace(
+                                                                    self.settings.font_size,
+                                                                ))
+                                                                .color(t.accent),
+                                                        );
+                                                    }
+                                                });
+                                            }
                                         });
                                 }
                             }
@@ -2015,26 +2388,34 @@ impl ClawGui {
                                 ui.add_space(8.0);
                                 egui::Frame::default()
                                     .fill(t.assistant_bubble)
-                                    .corner_radius(16)
-                                    .inner_margin(Margin::symmetric(14, 12))
+                                    .corner_radius(18)
+                                    .inner_margin(Margin::symmetric(15, 13))
                                     .stroke(egui::Stroke::new(
                                         1.0,
-                                        t.border.gamma_multiply(0.55),
+                                        t.border.linear_multiply(0.85),
                                     ))
                                     .shadow(t.bubble_shadow)
                                     .show(ui, |ui| {
                                         let bubble_w = max_w.min(ui.available_width());
                                         ui.set_width(bubble_w);
-                                        ui.label(
-                                            egui::RichText::new("Assistant")
-                                                .size(11.0)
-                                                .color(t.text_dim),
-                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("●")
+                                                    .size(9.0)
+                                                    .color(t.accent),
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                egui::RichText::new("Assistant")
+                                                    .size(11.0)
+                                                    .color(t.text_dim),
+                                            );
+                                        });
                                         ui.add_space(6.0);
                                         ui.horizontal(|ui| {
                                             ui.spinner();
                                             ui.add(egui::Label::new(
-                                                egui::RichText::new("Thinking…")
+                                                egui::RichText::new("Waiting for first token…")
                                                     .color(t.text_muted)
                                                     .size(13.0),
                                             ));
@@ -2084,14 +2465,14 @@ pub fn run_gui() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(Vec2::new(1400.0, 950.0))
             .with_min_inner_size(Vec2::new(900.0, 650.0))
-            .with_title("Claw Code — Ollama")
+            .with_title("Claw Code · Tidepool")
             .with_resizable(true),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
     let result = eframe::run_native(
-        "Claw Code — Ollama",
+        "Claw Code · Tidepool",
         options,
         Box::new(|_cc| match ClawGui::new() {
             Ok(gui) => Ok(Box::new(gui)),
