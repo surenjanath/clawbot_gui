@@ -3012,6 +3012,13 @@ fn describe_tool_progress(name: &str, input: &str) -> String {
                 || "running web search".to_string(),
                 |query| format!("query {}", truncate_for_summary(query, 100)),
             ),
+        "TurboQuant" => parsed
+            .get("action")
+            .and_then(|value| value.as_str())
+            .map_or_else(
+                || "TurboQuant".to_string(),
+                |action| format!("TurboQuant · {action}"),
+            ),
         _ => {
             let summary = summarize_tool_payload(input);
             if summary.is_empty() {

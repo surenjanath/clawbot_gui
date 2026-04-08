@@ -1,5 +1,6 @@
 //! Claw egui front-end (Ollama chat; optional Claw API later — see `backend`).
 
+mod agent_tools;
 mod app;
 mod backend;
 mod markdown;

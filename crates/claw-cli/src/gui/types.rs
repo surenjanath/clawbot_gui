@@ -37,6 +37,18 @@ pub struct AppSettings {
     /// Max total chars of user+assistant content (0 = unlimited).
     #[serde(default)]
     pub context_max_chars: usize,
+    /// WebFetch / WebSearch via the `tools` crate (network).
+    #[serde(default = "default_true")]
+    pub enable_research_tools: bool,
+    /// Read-only `gui_read_file` / `gui_glob_search` under `workspace_root`.
+    #[serde(default)]
+    pub enable_workspace_tools: bool,
+    /// Include MCP tools after a successful Refresh MCP (stdio servers from Claw config).
+    #[serde(default)]
+    pub enable_mcp_tools: bool,
+    /// Workspace root for file tools; empty = process current directory when the GUI starts.
+    #[serde(default)]
+    pub workspace_root: String,
 }
 
 fn default_true() -> bool {
@@ -53,6 +65,10 @@ impl Default for AppSettings {
             stream_responses: true,
             context_max_messages: 0,
             context_max_chars: 0,
+            enable_research_tools: true,
+            enable_workspace_tools: false,
+            enable_mcp_tools: false,
+            workspace_root: String::new(),
         }
     }
 }

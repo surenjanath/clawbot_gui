@@ -20,6 +20,35 @@ const REGISTRY_FILE_NAME: &str = "installed.json";
 const MANIFEST_FILE_NAME: &str = "plugin.json";
 const MANIFEST_RELATIVE_PATH: &str = ".claw-plugin/plugin.json";
 
+/// Shell used to run `.sh` plugin hooks, lifecycle scripts, and tools on Windows. Git for Windows
+/// is common on developer machines and is present on `windows-latest` CI runners.
+#[cfg(windows)]
+pub(crate) fn windows_sh_exe() -> PathBuf {
+    for candidate in [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\bin\sh.exe",
+        r"C:\Program Files\Git\usr\bin\sh.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\sh.exe",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.is_file() {
+            return path;
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for name in ["bash.exe", "sh.exe"] {
+                let path = dir.join(name);
+                if path.is_file() {
+                    return path;
+                }
+            }
+        }
+    }
+    PathBuf::from("sh")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginKind {
@@ -296,9 +325,34 @@ impl PluginTool {
 
     pub fn execute(&self, input: &Value) -> Result<String, PluginError> {
         let input_json = input.to_string();
-        let mut process = Command::new(&self.command);
+        let mut process = {
+            #[cfg(windows)]
+            {
+                let path = std::path::Path::new(self.command.as_str());
+                if path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+                {
+                    let mut p = Command::new(windows_sh_exe());
+                    p.arg(&self.command);
+                    p.args(&self.args);
+                    p
+                } else {
+                    let mut p = Command::new(&self.command);
+                    p.args(&self.args);
+                    p
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let mut p = Command::new(&self.command);
+                p.args(&self.args);
+                p
+            }
+        };
         process
-            .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1789,8 +1843,14 @@ fn validate_command_path(root: &Path, entry: &str, kind: &str) -> Result<(), Plu
 fn resolve_hook_entry(root: &Path, entry: &str) -> String {
     if is_literal_command(entry) {
         entry.to_string()
+    } else if Path::new(entry).is_absolute() {
+        PathBuf::from(entry).display().to_string()
     } else {
-        root.join(entry).display().to_string()
+        let relative = entry
+            .strip_prefix("./")
+            .or_else(|| entry.strip_prefix(".\\"))
+            .unwrap_or(entry);
+        root.join(relative).display().to_string()
     }
 }
 
@@ -1809,22 +1869,17 @@ fn run_lifecycle_commands(
     }
 
     for command in commands {
+        #[cfg(windows)]
+        let shell = windows_sh_exe();
+        #[cfg(not(windows))]
+        let shell = PathBuf::from("sh");
+
         let mut process = if Path::new(command).exists() {
-            if cfg!(windows) {
-                let mut process = Command::new("cmd");
-                process.arg("/C").arg(command);
-                process
-            } else {
-                let mut process = Command::new("sh");
-                process.arg(command);
-                process
-            }
-        } else if cfg!(windows) {
-            let mut process = Command::new("cmd");
-            process.arg("/C").arg(command);
+            let mut process = Command::new(&shell);
+            process.arg(command);
             process
         } else {
-            let mut process = Command::new("sh");
+            let mut process = Command::new(&shell);
             process.arg("-lc").arg(command);
             process
         };

@@ -610,7 +610,7 @@ mod tests {
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
             RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
-                vec![shell_snippet("printf 'blocked by hook'; exit 2")],
+                vec![hook_print_exit("blocked by hook", 2)],
                 Vec::new(),
             )),
         );
@@ -676,8 +676,8 @@ mod tests {
             PermissionPolicy::new(PermissionMode::DangerFullAccess),
             vec!["system".to_string()],
             RuntimeFeatureConfig::default().with_hooks(RuntimeHookConfig::new(
-                vec![shell_snippet("printf 'pre hook ran'")],
-                vec![shell_snippet("printf 'post hook ran'")],
+                vec![hook_print("pre hook ran")],
+                vec![hook_print("post hook ran")],
             )),
         );
 
@@ -789,13 +789,25 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
-    fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
+    fn hook_print(msg: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {msg}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '{msg}'")
+        }
     }
 
-    #[cfg(not(windows))]
-    fn shell_snippet(script: &str) -> String {
-        script.to_string()
+    fn hook_print_exit(msg: &str, code: i32) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {msg}&&exit /b {code}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '{msg}'; exit {code}")
+        }
     }
 }

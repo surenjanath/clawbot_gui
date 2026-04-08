@@ -302,10 +302,32 @@ mod tests {
     use super::{HookRunResult, HookRunner};
     use crate::config::{RuntimeFeatureConfig, RuntimeHookConfig};
 
+    fn hook_print(msg: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {msg}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '{msg}'")
+        }
+    }
+
+    fn hook_print_exit(msg: &str, code: i32) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {msg}&&exit /b {code}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '{msg}'; exit {code}")
+        }
+    }
+
     #[test]
     fn allows_exit_code_zero_and_captures_stdout() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
-            vec![shell_snippet("printf 'pre ok'")],
+            vec![hook_print("pre ok")],
             Vec::new(),
         ));
 
@@ -317,7 +339,7 @@ mod tests {
     #[test]
     fn denies_exit_code_two() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
-            vec![shell_snippet("printf 'blocked by hook'; exit 2")],
+            vec![hook_print_exit("blocked by hook", 2)],
             Vec::new(),
         ));
 
@@ -331,7 +353,7 @@ mod tests {
     fn warns_for_other_non_zero_statuses() {
         let runner = HookRunner::from_feature_config(&RuntimeFeatureConfig::default().with_hooks(
             RuntimeHookConfig::new(
-                vec![shell_snippet("printf 'warning hook'; exit 1")],
+                vec![hook_print_exit("warning hook", 1)],
                 Vec::new(),
             ),
         ));
@@ -345,13 +367,4 @@ mod tests {
             .any(|message| message.contains("allowing tool execution to continue")));
     }
 
-    #[cfg(windows)]
-    fn shell_snippet(script: &str) -> String {
-        script.replace('\'', "\"")
-    }
-
-    #[cfg(not(windows))]
-    fn shell_snippet(script: &str) -> String {
-        script.to_string()
-    }
 }

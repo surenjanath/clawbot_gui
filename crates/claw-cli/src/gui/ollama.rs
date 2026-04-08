@@ -6,6 +6,7 @@ use futures_util::StreamExt;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
+use super::agent_tools::{probe_tool_definitions, GuiToolDispatcher};
 use super::types::ChatMessage;
 
 /// Expand `{{date}}`, `{{time}}`, `{{os}}` in system prompt templates.
@@ -85,85 +86,6 @@ fn count_history_chars(messages: &[ChatMessage]) -> usize {
     messages.iter().map(|m| m.content.len()).sum()
 }
 
-pub fn ollama_tool_definitions() -> Vec<Value> {
-    vec![
-        json!({
-            "type": "function",
-            "function": {
-                "name": "get_current_time",
-                "description": "Returns the current wall-clock time (UTC-based, best effort).",
-                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "word_count",
-                "description": "Counts whitespace-separated words in the given text.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "text": { "type": "string", "description": "Text to count" } },
-                    "required": ["text"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "math_add",
-                "description": "Adds two integers.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "a": { "type": "integer" },
-                        "b": { "type": "integer" }
-                    },
-                    "required": ["a", "b"]
-                }
-            }
-        }),
-    ]
-}
-
-fn format_time_rough_utc() -> String {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => format!(
-            "UTC instant: {}s {}ns since Unix epoch",
-            d.as_secs(),
-            d.subsec_nanos()
-        ),
-        Err(_) => "time unavailable".to_string(),
-    }
-}
-
-fn json_int(args: &Value, key: &str) -> Option<i64> {
-    args.get(key).and_then(|x| {
-        x.as_i64()
-            .or_else(|| x.as_f64().map(|f| f as i64))
-    })
-}
-
-pub fn run_builtin_tool(name: &str, arguments: &str) -> Result<String, String> {
-    let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
-    match name {
-        "get_current_time" => Ok(format_time_rough_utc()),
-        "word_count" => {
-            let text = args
-                .get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("");
-            let n = text.split_whitespace().count();
-            Ok(format!("Word count: {n}"))
-        }
-        "math_add" => {
-            let a = json_int(&args, "a").ok_or_else(|| "missing or invalid integer field 'a'".to_string())?;
-            let b = json_int(&args, "b").ok_or_else(|| "missing or invalid integer field 'b'".to_string())?;
-            Ok(format!("{}", a + b))
-        }
-        _ => Err(format!("unknown tool '{name}'")),
-    }
-}
-
 pub fn ollama_chat_completion(
     client: &Client,
     base: &str,
@@ -216,7 +138,7 @@ pub fn probe_ollama_tool_support(
     temperature: f32,
     max_tokens: u32,
 ) -> (bool, String, String) {
-    let tools = ollama_tool_definitions();
+    let tools = probe_tool_definitions();
     let probe_messages = vec![
         json!({"role": "system", "content": "You are a test harness. When asked, you must call the provided function get_current_time using the tools API. Do not answer with plain text only."}),
         json!({"role": "user", "content": "Call the get_current_time tool now. Use tool_calls."}),
@@ -271,8 +193,9 @@ pub fn run_chat_with_optional_tools(
     temperature: f32,
     max_tokens: u32,
     enable_tools: bool,
+    dispatcher: &GuiToolDispatcher,
 ) -> Result<String, String> {
-    let tools = ollama_tool_definitions();
+    let tools = dispatcher.definitions();
     let mut messages: Vec<Value> = Vec::new();
     messages.push(json!({"role": "system", "content": system}));
     messages.extend_from_slice(history);
@@ -334,7 +257,7 @@ pub fn run_chat_with_optional_tools(
                     .and_then(|f| f.get("arguments"))
                     .and_then(|a| a.as_str())
                     .unwrap_or("{}");
-                let result = run_builtin_tool(name, args);
+                let result = dispatcher.invoke(name, args);
                 match &result {
                     Ok(out) => {
                         trace.push_str(&format!("\n[tool {name}] → {out}\n"));

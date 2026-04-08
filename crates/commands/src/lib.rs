@@ -2566,7 +2566,14 @@ mod tests {
         assert!(created.contains("feature/demo"));
         assert!(switched.contains("main"));
         assert!(added.contains("wt-demo"));
-        assert!(listed_worktrees.contains(worktree_path.to_str().expect("utf8 path")));
+        let worktree_leaf = worktree_path
+            .file_name()
+            .expect("worktree path should have a final segment")
+            .to_string_lossy();
+        assert!(
+            listed_worktrees.contains(worktree_leaf.as_ref()),
+            "expected worktree list to mention {worktree_leaf:?} (git may use long paths while Rust has 8.3 short paths):\n{listed_worktrees}"
+        );
         assert!(removed.contains("Result           removed"));
 
         let _ = fs::remove_dir_all(repo);

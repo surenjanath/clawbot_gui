@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::panic;
 use std::path::PathBuf;
@@ -12,10 +12,12 @@ use eframe::epaint::{CornerRadius, Margin, Shadow, Vec2};
 use reqwest::blocking::Client;
 use super::backend::GuiBackend;
 use super::markdown;
+use super::agent_tools::{discover_mcp_tools_blocking, GuiMcpToolEntry, GuiToolDispatcher};
 use super::ollama::{
     build_api_history, expand_system_prompt, probe_ollama_tool_support,
     run_chat_with_optional_tools, run_ollama_stream_blocking,
 };
+use runtime::ScopedMcpServerConfig;
 use super::persist::{self as persist_mod, load_config, save_config, save_session};
 use super::types::{AppSettings, ChatMessage, GuiConfigFile, PromptPreset, SessionFile};
 
@@ -48,6 +50,16 @@ enum GuiMessage {
         cancelled: bool,
         error: Option<String>,
     },
+    McpRefreshDone(
+        Result<
+            (
+                Vec<GuiMcpToolEntry>,
+                Arc<BTreeMap<String, ScopedMcpServerConfig>>,
+                String,
+            ),
+            String,
+        >,
+    ),
 }
 
 #[derive(Clone, Copy)]
@@ -167,6 +179,10 @@ pub struct ClawGui {
     tool_probe_summary: String,
     tool_probe_supports: Option<bool>,
     tool_probe_raw: String,
+    mcp_servers: Option<Arc<BTreeMap<String, ScopedMcpServerConfig>>>,
+    mcp_tool_entries: Vec<GuiMcpToolEntry>,
+    mcp_status_line: String,
+    is_refreshing_mcp: bool,
     tx: Option<mpsc::Sender<GuiMessage>>,
     rx: Option<mpsc::Receiver<GuiMessage>>,
     stream_cancel: Option<Arc<AtomicBool>>,
@@ -188,7 +204,7 @@ impl ClawGui {
 
         let mut gui = Self {
             messages: vec![ChatMessage::assistant(
-                "🦞 Welcome to Claw Code (Ollama)\n\n• Multi-turn chat, streaming, Stop, save/load sessions\n• **Tools** (optional): get_current_time, word_count, math_add\n• **Probe tool calling** for the selected model\n• Advanced system prompt: presets, `{{date}}` / `{{time}}` / `{{os}}`\n\nUse **Test connection**, pick a model, then chat.".to_string(),
+                "🦞 Welcome to Claw Code (Ollama)\n\n• Multi-turn chat — **streaming** when tools are off; **batch** mode runs research + tool loops\n• **Built-in tools**: time, word count, math\n• **Research** (optional): `gui_web_fetch`, `gui_web_search` (WebFetch/WebSearch from Claw)\n• **Workspace** (optional): read-only file + glob under the folder in Settings\n• **MCP**: enable in Settings, then **Refresh MCP** to load stdio servers from your Claw config\n• **Probe tool calling** checks whether the model speaks OpenAI-style `tool_calls`\n\nUse **Test connection**, pick a model, enable what you need in **Settings**, then chat.".to_string(),
                 0,
             )],
             input: String::new(),
@@ -214,6 +230,10 @@ impl ClawGui {
             tool_probe_summary: "Not tested yet — click “Probe tool calling”.".to_string(),
             tool_probe_supports: None,
             tool_probe_raw: String::new(),
+            mcp_servers: None,
+            mcp_tool_entries: Vec::new(),
+            mcp_status_line: "MCP: click Refresh MCP after enabling (uses Claw config).".to_string(),
+            is_refreshing_mcp: false,
             tx: Some(tx),
             rx: Some(rx),
             stream_cancel: None,
@@ -580,6 +600,39 @@ impl ClawGui {
         });
     }
 
+    fn workspace_path_for_tools(&self) -> PathBuf {
+        let r = self.settings.workspace_root.trim();
+        if r.is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            PathBuf::from(r)
+        }
+    }
+
+    fn build_tool_dispatcher(&self) -> GuiToolDispatcher {
+        GuiToolDispatcher {
+            enable_research_tools: self.settings.enable_research_tools,
+            enable_workspace_tools: self.settings.enable_workspace_tools,
+            enable_mcp_tools: self.settings.enable_mcp_tools,
+            workspace_root: self.workspace_path_for_tools(),
+            mcp_servers: self.mcp_servers.clone(),
+            mcp_tools: Arc::new(self.mcp_tool_entries.clone()),
+        }
+    }
+
+    fn refresh_mcp_catalog(&mut self) {
+        if self.is_refreshing_mcp {
+            return;
+        }
+        self.is_refreshing_mcp = true;
+        self.add_log("INFO", "Discovering MCP tools from Claw config…");
+        let tx = self.tx.clone().unwrap();
+        std::thread::spawn(move || {
+            let r = discover_mcp_tools_blocking();
+            let _ = tx.send(GuiMessage::McpRefreshDone(r));
+        });
+    }
+
     fn send_message(&mut self) {
         if self.input.trim().is_empty() {
             return;
@@ -612,6 +665,7 @@ impl ClawGui {
         let max_tokens = self.settings.ollama.max_tokens;
         let enable_tools = self.settings.ollama.enable_tools;
         let stream_on = self.settings.stream_responses && !enable_tools;
+        let tool_dispatcher = self.build_tool_dispatcher();
 
         let api_history = build_api_history(
             &self.messages,
@@ -682,6 +736,7 @@ impl ClawGui {
                     temperature,
                     max_tokens,
                     enable_tools,
+                    &tool_dispatcher,
                 ) {
                     Ok(text) => {
                         let n = text.len();
@@ -803,6 +858,23 @@ impl ClawGui {
                         self.tool_probe_raw = raw;
                         self.add_log(if supports { "INFO" } else { "WARN" }, &summary);
                     }
+                    GuiMessage::McpRefreshDone(result) => {
+                        self.is_refreshing_mcp = false;
+                        match result {
+                            Ok((entries, servers, note)) => {
+                                self.mcp_tool_entries = entries;
+                                self.mcp_servers = Some(servers);
+                                self.mcp_status_line = note.clone();
+                                self.add_log("INFO", &note);
+                            }
+                            Err(e) => {
+                                self.mcp_tool_entries.clear();
+                                self.mcp_servers = None;
+                                self.mcp_status_line = format!("MCP refresh failed: {e}");
+                                self.add_log("ERROR", &e);
+                            }
+                        }
+                    }
                 }
             } else {
                 break;
@@ -834,7 +906,7 @@ impl ClawGui {
 
     pub(crate) fn draw_ui(&mut self, ctx: &egui::Context) {
         self.check_response(ctx);
-        if self.is_loading || self.is_probing_tools {
+        if self.is_loading || self.is_probing_tools || self.is_refreshing_mcp {
             ctx.request_repaint();
         }
 
@@ -938,9 +1010,9 @@ impl ClawGui {
                                     .size(12.5),
                             );
 
-                            let stream_note = if self.settings.stream_responses
-                                && !self.settings.ollama.enable_tools
-                            {
+                            let stream_note = if self.settings.ollama.enable_tools {
+                                "Batch · tools"
+                            } else if self.settings.stream_responses {
                                 "Stream"
                             } else {
                                 "Batch"
@@ -972,6 +1044,18 @@ impl ClawGui {
                                         .size(11.0)
                                         .background_color(t.elevated),
                                 );
+                            }
+                            if self.settings.enable_mcp_tools && !self.mcp_tool_entries.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        " MCP {} ",
+                                        self.mcp_tool_entries.len()
+                                    ))
+                                    .color(t.accent)
+                                    .size(11.0)
+                                    .background_color(t.elevated),
+                                )
+                                .on_hover_text(&self.mcp_status_line);
                             }
 
                             ui.add_space(6.0);
@@ -1041,6 +1125,26 @@ impl ClawGui {
                                         .clicked()
                                     {
                                         self.test_connection();
+                                    }
+                                    let mcp_btn = egui::Button::new(
+                                        egui::RichText::new(if self.is_refreshing_mcp {
+                                            "MCP…"
+                                        } else {
+                                            "Refresh MCP"
+                                        })
+                                        .color(t.accent),
+                                    );
+                                    if ui
+                                        .add_enabled(!self.is_refreshing_mcp, mcp_btn)
+                                        .on_hover_text(
+                                            "Discover stdio MCP tools from your Claw config (same as CLI)",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.refresh_mcp_catalog();
+                                    }
+                                    if self.is_refreshing_mcp {
+                                        ui.spinner();
                                     }
                                     if ui
                                         .add_sized(
@@ -1393,7 +1497,7 @@ impl ClawGui {
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(
-                                            "Built-in: get_current_time, word_count, math_add.",
+                                            "Built-ins plus optional research, workspace, and MCP (see below).",
                                         )
                                         .color(egui::Color32::from_gray(110))
                                         .size(11.0),
@@ -1453,6 +1557,87 @@ impl ClawGui {
                                                 });
                                         });
                                 }
+
+                                ui.add_space(12.0);
+                                settings_section(
+                                    ui,
+                                    "Research, workspace & MCP",
+                                    t.text,
+                                    t.elevated,
+                                );
+                                ui.add_space(4.0);
+                                if ui
+                                    .checkbox(
+                                        &mut self.settings.enable_research_tools,
+                                        "Research tools (WebFetch / WebSearch — network)",
+                                    )
+                                    .changed()
+                                {
+                                    settings_changed = true;
+                                }
+                                if ui
+                                    .checkbox(
+                                        &mut self.settings.enable_workspace_tools,
+                                        "Workspace tools (read-only file + glob)",
+                                    )
+                                    .changed()
+                                {
+                                    settings_changed = true;
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Workspace folder")
+                                            .color(egui::Color32::from_gray(140))
+                                            .size(11.5),
+                                    );
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.settings.workspace_root,
+                                            )
+                                            .hint_text("empty = app working directory")
+                                            .desired_width(ui.available_width().max(120.0)),
+                                        )
+                                        .changed()
+                                    {
+                                        settings_changed = true;
+                                    }
+                                });
+                                ui.add_space(4.0);
+                                if ui
+                                    .checkbox(
+                                        &mut self.settings.enable_mcp_tools,
+                                        "Expose MCP tools to the model (after Refresh MCP)",
+                                    )
+                                    .changed()
+                                {
+                                    settings_changed = true;
+                                }
+                                ui.horizontal(|ui| {
+                                    let can = !self.is_refreshing_mcp;
+                                    let btn = egui::Button::new(egui::RichText::new(
+                                        if self.is_refreshing_mcp {
+                                            "Refreshing MCP…"
+                                        } else {
+                                            "Refresh MCP catalog"
+                                        },
+                                    )
+                                    .color(t.accent));
+                                    if ui.add_enabled(can, btn).clicked() {
+                                        self.refresh_mcp_catalog();
+                                    }
+                                    if self.is_refreshing_mcp {
+                                        ui.spinner();
+                                    }
+                                });
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&self.mcp_status_line)
+                                            .color(egui::Color32::from_gray(115))
+                                            .size(10.5),
+                                    )
+                                    .wrap(),
+                                );
 
                                 ui.add_space(12.0);
                                 settings_section(ui, "System prompt", t.text, t.elevated);

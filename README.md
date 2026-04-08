@@ -126,6 +126,19 @@ The Rust workspace is the active product implementation. It currently includes t
 - `lsp` — language-server protocol support types and process helpers
 - `server` and `compat-harness` — supporting services and compatibility tooling
 
+### TurboQuant (agent tool)
+
+**TurboQuant** (Zandieh et al., ICLR 2026) is implemented in this workspace via the [`turbo-quant`](https://crates.io/crates/turbo-quant) crate ([docs](https://docs.rs/turbo-quant/latest/turbo_quant/), [repo](https://github.com/RecursiveIntell/turbo-quant)): data-oblivious vector compression with accurate inner-product estimates at low bit widths.
+
+The **`TurboQuant`** built-in tool (REPL and API agents) runs on **your numeric vectors**:
+
+- **`inner_product_estimate`** — supply `key` and `query` (same length); returns true vs estimated dot product, encoded size, and compression vs raw `f32`.
+- **`attention_scores`** — supply `keys` (array of vectors) and `query`; returns TurboQuant KV-style score estimates vs exact dot products (mean error, per-token scores).
+
+Optional: `bits` (`4` or `8`), `projections`, `seed`. Limits: dimension ≤ 4096, at most 512 keys. Permission: read-only.
+
+**Related crate:** [`turboquant`](https://docs.rs/turboquant/latest/turboquant/) ([abdelstark/turboquant](https://github.com/abdelstark/turboquant)) adds heavier ONNX / `ort` tooling; not used in this workspace’s default build.
+
 ## Roadmap
 
 - Publish packaged release artifacts for public installs

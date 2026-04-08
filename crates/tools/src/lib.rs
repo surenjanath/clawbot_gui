@@ -19,6 +19,8 @@ use runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod turbo_quant_tool;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolManifestEntry {
     pub name: String,
@@ -533,6 +535,40 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             }),
             required_permission: PermissionMode::DangerFullAccess,
         },
+        ToolSpec {
+            name: "TurboQuant",
+            description: "Run TurboQuant (turbo-quant crate) on real f32 vectors: estimate inner products and compressed KV-style attention scores. Actions: inner_product_estimate (key+query same length) or attention_scores (keys[]+query). Optional bits 4|8, projections, seed. Caps: dim<=4096, <=512 keys.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["inner_product_estimate", "attention_scores"]
+                    },
+                    "key": {
+                        "type": "array",
+                        "items": { "type": "number" }
+                    },
+                    "keys": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": { "type": "number" }
+                        }
+                    },
+                    "query": {
+                        "type": "array",
+                        "items": { "type": "number" }
+                    },
+                    "bits": { "type": "integer", "enum": [4, 8] },
+                    "projections": { "type": "integer", "minimum": 1 },
+                    "seed": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::ReadOnly,
+        },
     ]
 }
 
@@ -559,6 +595,7 @@ pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
         }
         "REPL" => from_value::<ReplInput>(input).and_then(run_repl),
         "PowerShell" => from_value::<PowerShellInput>(input).and_then(run_powershell),
+        "TurboQuant" => from_value::<turbo_quant_tool::TurboQuantToolInput>(input).and_then(run_turbo_quant),
         _ => Err(format!("unsupported tool: {name}")),
     }
 }
@@ -657,6 +694,10 @@ fn run_repl(input: ReplInput) -> Result<String, String> {
 
 fn run_powershell(input: PowerShellInput) -> Result<String, String> {
     to_pretty_json(execute_powershell(input).map_err(|error| error.to_string())?)
+}
+
+fn run_turbo_quant(input: turbo_quant_tool::TurboQuantToolInput) -> Result<String, String> {
+    to_pretty_json(turbo_quant_tool::execute_turbo_quant_tool(input)?)
 }
 
 fn to_pretty_json<T: serde::Serialize>(value: T) -> Result<String, String> {
@@ -1454,6 +1495,12 @@ fn todo_store_path() -> Result<std::path::PathBuf, String> {
     Ok(cwd.join(".claw-todos.json"))
 }
 
+fn user_home_for_skills() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     let requested = skill.trim().trim_start_matches('/').trim_start_matches('$');
     if requested.is_empty() {
@@ -1461,16 +1508,21 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     }
 
     let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            candidates.push(ancestor.join(".codex").join("skills"));
+            candidates.push(ancestor.join(".claw").join("skills"));
+        }
+    }
     if let Ok(codex_home) = std::env::var("CODEX_HOME") {
         candidates.push(std::path::PathBuf::from(codex_home).join("skills"));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home = std::path::PathBuf::from(home);
+    if let Some(home) = user_home_for_skills() {
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".config").join("opencode").join("skills"));
         candidates.push(home.join(".codex").join("skills"));
+        candidates.push(home.join(".claw").join("skills"));
     }
-    candidates.push(std::path::PathBuf::from("/home/bellman/.codex/skills"));
 
     for root in candidates {
         let direct = root.join(requested).join("SKILL.md");
@@ -1673,6 +1725,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "ToolSearch",
             "Skill",
             "StructuredOutput",
+            "TurboQuant",
         ],
         "Plan" => vec![
             "read_file",
@@ -1685,6 +1738,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "TodoWrite",
             "StructuredOutput",
             "SendUserMessage",
+            "TurboQuant",
         ],
         "Verification" => vec![
             "bash",
@@ -1698,6 +1752,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "StructuredOutput",
             "SendUserMessage",
             "PowerShell",
+            "TurboQuant",
         ],
         "claw-guide" => vec![
             "read_file",
@@ -1709,6 +1764,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "Skill",
             "StructuredOutput",
             "SendUserMessage",
+            "TurboQuant",
         ],
         "statusline-setup" => vec![
             "bash",
@@ -1738,6 +1794,7 @@ fn allowed_tools_for_subagent(subagent_type: &str) -> BTreeSet<String> {
             "StructuredOutput",
             "REPL",
             "PowerShell",
+            "TurboQuant",
         ],
     };
     tools.into_iter().map(str::to_string).collect()
@@ -2569,11 +2626,20 @@ struct ReplRuntime {
 
 fn resolve_repl_runtime(language: &str) -> Result<ReplRuntime, String> {
     match language.trim().to_ascii_lowercase().as_str() {
-        "python" | "py" => Ok(ReplRuntime {
-            program: detect_first_command(&["python3", "python"])
-                .ok_or_else(|| String::from("python runtime not found"))?,
-            args: &["-c"],
-        }),
+        "python" | "py" => {
+            #[cfg(windows)]
+            if command_exists("py") {
+                return Ok(ReplRuntime {
+                    program: "py",
+                    args: &["-3", "-c"],
+                });
+            }
+            Ok(ReplRuntime {
+                program: detect_first_command(&["python3", "python"])
+                    .ok_or_else(|| String::from("python runtime not found"))?,
+                args: &["-c"],
+            })
+        }
         "javascript" | "js" | "node" => Ok(ReplRuntime {
             program: detect_first_command(&["node"])
                 .ok_or_else(|| String::from("node runtime not found"))?,
@@ -2861,12 +2927,25 @@ fn detect_powershell_shell() -> std::io::Result<&'static str> {
 }
 
 fn command_exists(command: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        std::process::Command::new("where")
+            .arg(command)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sh")
+            .arg("-lc")
+            .arg(format!("command -v {command} >/dev/null 2>&1"))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3113,6 +3192,46 @@ mod tests {
         assert!(names.contains(&"StructuredOutput"));
         assert!(names.contains(&"REPL"));
         assert!(names.contains(&"PowerShell"));
+        assert!(names.contains(&"TurboQuant"));
+    }
+
+    #[test]
+    fn turbo_quant_tool_inner_product_and_attention_scores() {
+        let ip = execute_tool(
+            "TurboQuant",
+            &json!({
+                "action": "inner_product_estimate",
+                "key": [1.0, 0.0, 0.0, 0.0],
+                "query": [1.0, 0.0, 0.0, 0.0],
+                "bits": 8,
+                "seed": 7
+            }),
+        )
+        .expect("inner_product_estimate");
+        let ip_v: serde_json::Value = serde_json::from_str(&ip).expect("json");
+        assert_eq!(ip_v["action"], "inner_product_estimate");
+        assert!((ip_v["true_inner_product"].as_f64().unwrap() - 1.0).abs() < 1e-5);
+        assert!(ip_v["estimated_inner_product"].as_f64().is_some());
+        assert!(ip_v["compression_ratio"].as_f64().unwrap() > 0.0);
+
+        let att = execute_tool(
+            "TurboQuant",
+            &json!({
+                "action": "attention_scores",
+                "keys": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0]
+                ],
+                "query": [1.0, 0.0, 0.0, 0.0],
+                "bits": 8,
+                "seed": 7
+            }),
+        )
+        .expect("attention_scores");
+        let att_v: serde_json::Value = serde_json::from_str(&att).expect("json");
+        assert_eq!(att_v["action"], "attention_scores");
+        assert_eq!(att_v["token_count"], 2);
+        assert!(att_v["mean_absolute_error"].as_f64().unwrap() >= 0.0);
     }
 
     #[test]
@@ -3463,10 +3582,11 @@ mod tests {
 
         let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
         assert_eq!(output["skill"], "help");
-        assert!(output["path"]
-            .as_str()
-            .expect("path")
-            .ends_with("/help/SKILL.md"));
+        let help_path = output["path"].as_str().expect("path").replace('\\', "/");
+        assert!(
+            help_path.ends_with("/help/SKILL.md"),
+            "unexpected skill path: {help_path}"
+        );
         assert!(output["prompt"]
             .as_str()
             .expect("prompt")
@@ -3482,10 +3602,11 @@ mod tests {
         let dollar_output: serde_json::Value =
             serde_json::from_str(&dollar_result).expect("valid json");
         assert_eq!(dollar_output["skill"], "$help");
-        assert!(dollar_output["path"]
-            .as_str()
-            .expect("path")
-            .ends_with("/help/SKILL.md"));
+        let dollar_path = dollar_output["path"].as_str().expect("path").replace('\\', "/");
+        assert!(
+            dollar_path.ends_with("/help/SKILL.md"),
+            "unexpected skill path: {dollar_path}"
+        );
     }
 
     #[test]
@@ -3695,6 +3816,7 @@ mod tests {
         let general = allowed_tools_for_subagent("general-purpose");
         assert!(general.contains("bash"));
         assert!(general.contains("write_file"));
+        assert!(general.contains("TurboQuant"));
         assert!(!general.contains("Agent"));
 
         let explore = allowed_tools_for_subagent("Explore");
@@ -3936,13 +4058,24 @@ mod tests {
 
     #[test]
     fn bash_tool_reports_success_exit_failure_timeout_and_background() {
-        let success = execute_tool("bash", &json!({ "command": "printf 'hello'" }))
+        let success_cmd = if cfg!(windows) {
+            "echo hello"
+        } else {
+            "printf 'hello'"
+        };
+        let success = execute_tool("bash", &json!({ "command": success_cmd }))
             .expect("bash should succeed");
         let success_output: serde_json::Value = serde_json::from_str(&success).expect("json");
-        assert_eq!(success_output["stdout"], "hello");
+        let stdout = success_output["stdout"].as_str().expect("stdout");
+        assert_eq!(stdout.trim_end_matches(['\r', '\n']), "hello");
         assert_eq!(success_output["interrupted"], false);
 
-        let failure = execute_tool("bash", &json!({ "command": "printf 'oops' >&2; exit 7" }))
+        let failure_cmd = if cfg!(windows) {
+            "(echo oops 1>&2) & exit /b 7"
+        } else {
+            "printf 'oops' >&2; exit 7"
+        };
+        let failure = execute_tool("bash", &json!({ "command": failure_cmd }))
             .expect("bash failure should still return structured output");
         let failure_output: serde_json::Value = serde_json::from_str(&failure).expect("json");
         assert_eq!(failure_output["returnCodeInterpretation"], "exit_code:7");
@@ -3951,8 +4084,16 @@ mod tests {
             .expect("stderr")
             .contains("oops"));
 
-        let timeout = execute_tool("bash", &json!({ "command": "sleep 1", "timeout": 10 }))
-            .expect("bash timeout should return output");
+        let slow_cmd = if cfg!(windows) {
+            "timeout /t 1 /nobreak >nul"
+        } else {
+            "sleep 1"
+        };
+        let timeout = execute_tool(
+            "bash",
+            &json!({ "command": slow_cmd, "timeout": 10 }),
+        )
+        .expect("bash timeout should return output");
         let timeout_output: serde_json::Value = serde_json::from_str(&timeout).expect("json");
         assert_eq!(timeout_output["interrupted"], true);
         assert_eq!(timeout_output["returnCodeInterpretation"], "timeout");
@@ -3963,7 +4104,7 @@ mod tests {
 
         let background = execute_tool(
             "bash",
-            &json!({ "command": "sleep 1", "run_in_background": true }),
+            &json!({ "command": slow_cmd, "run_in_background": true }),
         )
         .expect("bash background should succeed");
         let background_output: serde_json::Value = serde_json::from_str(&background).expect("json");
@@ -4103,10 +4244,14 @@ mod tests {
             .expect("glob should succeed");
         let globbed_output: serde_json::Value = serde_json::from_str(&globbed).expect("json");
         assert_eq!(globbed_output["numFiles"], 1);
-        assert!(globbed_output["filenames"][0]
+        let glob_path = globbed_output["filenames"][0]
             .as_str()
             .expect("filename")
-            .ends_with("nested/lib.rs"));
+            .replace('\\', "/");
+        assert!(
+            glob_path.ends_with("nested/lib.rs"),
+            "unexpected glob path: {glob_path}"
+        );
 
         let glob_error = execute_tool("glob_search", &json!({ "pattern": "[" }))
             .expect_err("invalid glob should fail");
@@ -4287,6 +4432,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn powershell_runs_via_stub_shell() {
         let _guard = env_lock()
             .lock()

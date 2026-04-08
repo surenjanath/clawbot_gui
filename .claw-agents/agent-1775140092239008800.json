@@ -1,0 +1,14 @@
+{
+  "agentId": "agent-1775140092239008800",
+  "name": "ship-audit",
+  "description": "Review the branch",
+  "subagentType": "general-purpose",
+  "model": "claude-opus-4-6",
+  "status": "failed",
+  "outputFile": "C:\\Users\\Surenjanath Singh\\OneDrive - Gulf Insurance Limited\\Desktop\\Personal Stuff\\2026 Projects\\Github\\rust\\.claw-agents\\agent-1775140092239008800.md",
+  "manifestFile": "C:\\Users\\Surenjanath Singh\\OneDrive - Gulf Insurance Limited\\Desktop\\Personal Stuff\\2026 Projects\\Github\\rust\\.claw-agents\\agent-1775140092239008800.json",
+  "createdAt": "1775140092",
+  "startedAt": "1775140092",
+  "completedAt": "1775140092",
+  "error": "io error: HOME is not set"
+}

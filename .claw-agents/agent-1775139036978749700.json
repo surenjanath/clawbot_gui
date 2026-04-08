@@ -1,0 +1,14 @@
+{
+  "agentId": "agent-1775139036978749700",
+  "name": "verify-the-branch",
+  "description": "Verify the branch",
+  "subagentType": "Explore",
+  "model": "claude-opus-4-6",
+  "status": "failed",
+  "outputFile": "C:\\Users\\Surenjanath Singh\\OneDrive - Gulf Insurance Limited\\Desktop\\Personal Stuff\\2026 Projects\\Github\\rust\\.claw-agents\\agent-1775139036978749700.md",
+  "manifestFile": "C:\\Users\\Surenjanath Singh\\OneDrive - Gulf Insurance Limited\\Desktop\\Personal Stuff\\2026 Projects\\Github\\rust\\.claw-agents\\agent-1775139036978749700.json",
+  "createdAt": "1775139036",
+  "startedAt": "1775139036",
+  "completedAt": "1775139037",
+  "error": "io error: HOME is not set"
+}

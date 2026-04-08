@@ -229,8 +229,14 @@ fn format_hook_warning(command: &str, code: i32, stdout: Option<&str>, stderr: &
 }
 
 fn shell_command(command: &str) -> CommandWithStdin {
+    // On Windows, `cmd /C path\to\script.sh` fails (not a Win32 app); run shell scripts via `sh`
+    // (Git for Windows / MSYS). Inline snippets use `cmd /C` on Windows and `sh -lc` on Unix.
     #[cfg(windows)]
-    let command_builder = {
+    let command_builder = if Path::new(command).exists() {
+        let mut command_builder = Command::new(crate::windows_sh_exe());
+        command_builder.arg(command);
+        CommandWithStdin::new(command_builder)
+    } else {
         let mut command_builder = Command::new("cmd");
         command_builder.arg("/C").arg(command);
         CommandWithStdin::new(command_builder)
@@ -382,8 +388,13 @@ mod tests {
 
     #[test]
     fn pre_tool_use_denies_when_plugin_hook_exits_two() {
+        let deny_hook = if cfg!(windows) {
+            "echo blocked by plugin&&exit /b 2"
+        } else {
+            "printf 'blocked by plugin'; exit 2"
+        };
         let runner = HookRunner::new(crate::PluginHooks {
-            pre_tool_use: vec!["printf 'blocked by plugin'; exit 2".to_string()],
+            pre_tool_use: vec![deny_hook.to_string()],
             post_tool_use: Vec::new(),
         });
 
