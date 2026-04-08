@@ -342,6 +342,12 @@ pub fn parse_sse_data_json_line(payload: &str) -> Option<String> {
             }
         }
     }
+    // Ollama native `/api/chat` stream: incremental `message.content` on the root object.
+    if let Some(msg) = v.get("message") {
+        if let Some(s) = openai_delta_content(msg) {
+            return Some(s);
+        }
+    }
     None
 }
 
@@ -473,5 +479,14 @@ mod tests {
 
         let arr = r#"{"choices":[{"delta":{"content":[{"text":"a"},{"text":"b"}]}}]}"#;
         assert_eq!(parse_sse_data_json_line(arr).as_deref(), Some("ab"));
+
+        let nested = r#"{"choices":[{"delta":{"message":{"content":"nested"}}}]}"#;
+        assert_eq!(parse_sse_data_json_line(nested).as_deref(), Some("nested"));
+
+        let ollama_native = r#"{"model":"m","message":{"role":"assistant","content":"chunk"},"done":false}"#;
+        assert_eq!(
+            parse_sse_data_json_line(ollama_native).as_deref(),
+            Some("chunk")
+        );
     }
 }

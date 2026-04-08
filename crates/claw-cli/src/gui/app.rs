@@ -35,8 +35,8 @@ pub(crate) enum ConnectionStatus {
 }
 
 enum GuiMessage {
-    Response(String),
-    Error(String),
+    Response { gen: u64, content: String },
+    Error { gen: u64, message: String },
     Models(Vec<String>),
     Status(ConnectionStatus),
     Log(String, String),
@@ -45,8 +45,9 @@ enum GuiMessage {
         summary: String,
         raw: String,
     },
-    StreamDelta(String),
+    StreamDelta { gen: u64, text: String },
     StreamDone {
+        gen: u64,
         cancelled: bool,
         error: Option<String>,
     },
@@ -416,6 +417,10 @@ pub struct ClawGui {
     tx: Option<mpsc::Sender<GuiMessage>>,
     rx: Option<mpsc::Receiver<GuiMessage>>,
     stream_cancel: Option<Arc<AtomicBool>>,
+    /// Bumped on each send and on new/clear/open session so stale worker messages are ignored.
+    active_generation: u64,
+    /// After send, move focus back to the composer.
+    composer_request_focus: bool,
     new_preset_name: String,
     import_prompt_path: String,
     session_open_path: String,
@@ -464,6 +469,8 @@ impl ClawGui {
             tx: Some(tx),
             rx: Some(rx),
             stream_cancel: None,
+            active_generation: 0,
+            composer_request_focus: false,
             new_preset_name: String::new(),
             import_prompt_path: String::new(),
             session_open_path: String::new(),
@@ -607,6 +614,9 @@ impl ClawGui {
     }
 
     fn new_chat(&mut self) {
+        self.stop_generation();
+        self.active_generation = self.active_generation.saturating_add(1);
+        self.is_loading = false;
         self.messages.clear();
         self.messages.push(ChatMessage::assistant(
             "New chat — send a message to begin.".to_string(),
@@ -650,6 +660,9 @@ impl ClawGui {
     }
 
     fn open_session_from_path(&mut self, path: &str) {
+        self.stop_generation();
+        self.active_generation = self.active_generation.saturating_add(1);
+        self.is_loading = false;
         let p = PathBuf::from(path.trim());
         match super::persist::load_session(&p) {
             Ok(s) => {
@@ -871,6 +884,10 @@ impl ClawGui {
             return;
         }
 
+        self.stop_generation();
+        self.active_generation = self.active_generation.saturating_add(1);
+        let gen = self.active_generation;
+
         let user_input = std::mem::take(&mut self.input);
         let msg_id = self.next_msg_id();
         self.messages
@@ -878,7 +895,7 @@ impl ClawGui {
         self.messages
             .push(ChatMessage::assistant(String::new(), msg_id + 1));
         self.is_loading = true;
-        self.stream_cancel = None;
+        self.composer_request_focus = true;
 
         self.add_log(
             "SEND",
@@ -918,19 +935,21 @@ impl ClawGui {
                     max_tokens,
                     cancel.clone(),
                     move |d| {
-                        let _ = tx2.send(GuiMessage::StreamDelta(d));
+                        let _ = tx2.send(GuiMessage::StreamDelta { gen, text: d });
                     },
                 );
                 let cancelled = cancel.load(Ordering::SeqCst);
                 match r {
                     Ok(()) => {
                         let _ = tx.send(GuiMessage::StreamDone {
+                            gen,
                             cancelled,
                             error: None,
                         });
                     }
                     Err(e) => {
                         let _ = tx.send(GuiMessage::StreamDone {
+                            gen,
                             cancelled,
                             error: Some(e),
                         });
@@ -948,7 +967,10 @@ impl ClawGui {
                 let client = match Client::builder().timeout(Duration::from_secs(180)).build() {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = tx.send(GuiMessage::Error(format!("Client error: {e}")));
+                        let _ = tx.send(GuiMessage::Error {
+                            gen,
+                            message: format!("Client error: {e}"),
+                        });
                         return;
                     }
                 };
@@ -967,14 +989,20 @@ impl ClawGui {
                 ) {
                     Ok(text) => {
                         let n = text.len();
-                        let _ = tx.send(GuiMessage::Response(text));
+                        let _ = tx.send(GuiMessage::Response {
+                            gen,
+                            content: text,
+                        });
                         let _ = tx.send(GuiMessage::Log(
                             "INFO".to_string(),
                             format!("Response received ({n} chars)"),
                         ));
                     }
                     Err(e) => {
-                        let _ = tx.send(GuiMessage::Error(e));
+                        let _ = tx.send(GuiMessage::Error {
+                            gen,
+                            message: e,
+                        });
                     }
                 }
 
@@ -991,7 +1019,10 @@ impl ClawGui {
         while let Some(rx) = &self.rx {
             if let Ok(msg) = rx.try_recv() {
                 match msg {
-                    GuiMessage::Response(content) => {
+                    GuiMessage::Response { gen, content } => {
+                        if gen != self.active_generation {
+                            continue;
+                        }
                         if let Some(last) = self.messages.last_mut() {
                             last.content = content.clone();
                         }
@@ -1004,15 +1035,25 @@ impl ClawGui {
                         self.total_requests += 1;
                         self.add_log("RECV", &format!("Response ({} chars)", content.len()));
                     }
-                    GuiMessage::StreamDelta(s) => {
+                    GuiMessage::StreamDelta { gen, text } => {
+                        if gen != self.active_generation {
+                            continue;
+                        }
                         if let Some(last) = self.messages.last_mut() {
                             if last.role == "assistant" {
-                                last.content.push_str(&s);
+                                last.content.push_str(&text);
                             }
                         }
                         ctx.request_repaint();
                     }
-                    GuiMessage::StreamDone { cancelled, error } => {
+                    GuiMessage::StreamDone {
+                        gen,
+                        cancelled,
+                        error,
+                    } => {
+                        if gen != self.active_generation {
+                            continue;
+                        }
                         self.is_loading = false;
                         self.stream_cancel = None;
                         let had_error = error.is_some();
@@ -1046,16 +1087,19 @@ impl ClawGui {
                             }
                         }
                     }
-                    GuiMessage::Error(error) => {
+                    GuiMessage::Error { gen, message } => {
+                        if gen != self.active_generation {
+                            continue;
+                        }
                         if let Some(last) = self.messages.last_mut() {
-                            last.content = format!("❌ Error: {error}");
+                            last.content = format!("❌ Error: {message}");
                         }
                         self.is_loading = false;
                         self.stream_cancel = None;
                         self.connection_status = ConnectionStatus::Disconnected;
                         self.total_requests += 1;
-                        self.add_log("ERROR", &error);
-                        self.error_message = error;
+                        self.add_log("ERROR", &message);
+                        self.error_message = message;
                         self.show_error = true;
                     }
                     GuiMessage::Models(models) => {
@@ -1110,6 +1154,9 @@ impl ClawGui {
     }
 
     fn clear_chat(&mut self) {
+        self.stop_generation();
+        self.active_generation = self.active_generation.saturating_add(1);
+        self.is_loading = false;
         self.messages.clear();
         self.messages.push(ChatMessage::assistant(
             "Chat cleared. Start a new conversation!".to_string(),
@@ -1123,6 +1170,76 @@ impl ClawGui {
         self.add_log("INFO", "Logs cleared");
     }
 
+    /// Markdown-ish transcript for copy/export (skips welcome placeholder).
+    fn chat_transcript_markdown(&self) -> String {
+        let mut out = String::new();
+        for m in &self.messages {
+            if m.role != "user" && m.role != "assistant" {
+                continue;
+            }
+            if m.id == 0 && m.role == "assistant" {
+                continue;
+            }
+            if m.content == GUI_WELCOME_MARKER {
+                continue;
+            }
+            let body = m.content.trim();
+            if body.is_empty() {
+                continue;
+            }
+            if m.role == "user" {
+                out.push_str("### User\n\n");
+                out.push_str(body);
+                out.push_str("\n\n");
+            } else {
+                out.push_str("### Assistant\n\n");
+                out.push_str(body);
+                out.push_str("\n\n");
+            }
+        }
+        out
+    }
+
+    fn copy_chat_transcript(&mut self, ctx: &egui::Context) {
+        let s = self.chat_transcript_markdown();
+        if s.trim().is_empty() {
+            self.add_log("WARN", "Nothing to copy");
+            return;
+        }
+        ctx.copy_text(s);
+        self.add_log("INFO", "Chat copied to clipboard (Markdown)");
+    }
+
+    fn export_chat_transcript(&mut self) {
+        let s = self.chat_transcript_markdown();
+        if s.trim().is_empty() {
+            self.add_log("WARN", "Nothing to export");
+            return;
+        }
+        if let Err(e) = persist_mod::ensure_gui_dirs() {
+            self.error_message = format!("Export failed: {e}");
+            self.show_error = true;
+            return;
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = persist_mod::sessions_dir().join(format!("chat-export-{ts}.md"));
+        match std::fs::write(&path, format!("{s}\n")) {
+            Ok(()) => {
+                self.add_log(
+                    "INFO",
+                    &format!("Exported chat to {}", path.display()),
+                );
+            }
+            Err(e) => {
+                self.error_message = format!("Export failed: {e}");
+                self.show_error = true;
+            }
+        }
+    }
+
     fn copy_message(&mut self, ctx: &egui::Context, id: usize) {
         if let Some(msg) = self.messages.iter().find(|m| m.id == id) {
             self.copy_flash = Some((id, Instant::now() + Duration::from_millis(1400)));
@@ -1134,6 +1251,20 @@ impl ClawGui {
 
     pub(crate) fn draw_ui(&mut self, ctx: &egui::Context) {
         self.check_response(ctx);
+        ctx.input_mut(|i| {
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::N,
+            )) {
+                self.new_chat();
+            }
+            if i.key_pressed(egui::Key::Escape)
+                && self.is_loading
+                && self.stream_cancel.is_some()
+            {
+                self.stop_generation();
+            }
+        });
         if self
             .copy_flash
             .as_ref()
@@ -1270,12 +1401,20 @@ impl ClawGui {
                             } else {
                                 "Batch"
                             };
+                            let stream_hover = if self.settings.ollama.enable_tools {
+                                "Tool calling uses full responses; token streaming is off while tools are enabled."
+                            } else if self.settings.stream_responses {
+                                "Replies stream token-by-token from the OpenAI-compatible endpoint."
+                            } else {
+                                "Streaming is off in Settings; each reply arrives as one block."
+                            };
                             ui.label(
                                 egui::RichText::new(format!(" {stream_note} "))
                                     .color(t.text_muted)
                                     .size(10.5)
                                     .background_color(t.elevated),
-                            );
+                            )
+                            .on_hover_text(stream_hover);
 
                             let (tc, tt) = if self.settings.ollama.enable_tools {
                                 (t.accent, "Tools on")
@@ -1384,10 +1523,50 @@ impl ClawGui {
                                     self.clear_chat();
                                 }
                                 if toolbar_standard_btn(ui, "New chat", &t, 92.0, bh)
-                                    .on_hover_text("Start a fresh thread")
+                                    .on_hover_text("Start a fresh thread (Ctrl+N)")
                                     .clicked()
                                 {
                                     self.new_chat();
+                                }
+                                if toolbar_standard_btn(ui, "Save", &t, 64.0, bh)
+                                    .on_hover_text("Save this chat to the sessions folder")
+                                    .clicked()
+                                {
+                                    self.save_current_session();
+                                }
+                                egui::ComboBox::from_id_salt("toolbar_recent_sessions")
+                                    .width(118.0)
+                                    .selected_text(
+                                        egui::RichText::new("Recent…").size(12.0).color(t.text),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                                        if let Ok(files) = persist_mod::list_session_files() {
+                                            for p in files.iter().rev().take(16) {
+                                                let label = p
+                                                    .file_name()
+                                                    .and_then(|n| n.to_str())
+                                                    .unwrap_or("?");
+                                                if ui.selectable_label(false, label).clicked() {
+                                                    let path_str = p.to_string_lossy().to_string();
+                                                    self.open_session_from_path(&path_str);
+                                                }
+                                            }
+                                        }
+                                    });
+                                if toolbar_standard_btn(ui, "Copy", &t, 58.0, bh)
+                                    .on_hover_text("Copy chat as Markdown to the clipboard")
+                                    .clicked()
+                                {
+                                    self.copy_chat_transcript(ctx);
+                                }
+                                if toolbar_standard_btn(ui, "Export", &t, 72.0, bh)
+                                    .on_hover_text(
+                                        "Write chat as Markdown under the sessions folder",
+                                    )
+                                    .clicked()
+                                {
+                                    self.export_chat_transcript();
                                 }
                                 if toolbar_logs_btn(ui, self.show_logs, &t, 68.0, bh)
                                     .on_hover_text("Toggle live log panel")
@@ -1714,6 +1893,21 @@ impl ClawGui {
                                     .changed()
                                 {
                                     settings_changed = true;
+                                }
+                                if self.settings.ollama.enable_tools
+                                    && self.settings.stream_responses
+                                {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(
+                                                "While tools are on, replies are sent as full responses (not streamed), even if “Stream responses” is enabled.",
+                                            )
+                                            .color(t.warn)
+                                            .size(11.5),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.add_space(4.0);
                                 }
                                 ui.add(
                                     egui::Label::new(
@@ -2066,12 +2260,12 @@ impl ClawGui {
         }
 
         egui::TopBottomPanel::bottom("input")
-            .min_height(108.0)
+            .min_height(100.0)
             .show(ctx, |ui| {
             egui::Frame::default()
                 .fill(t.panel)
                 .stroke(egui::Stroke::new(1.0, t.border.linear_multiply(0.9)))
-                .inner_margin(Margin::symmetric(18, 16))
+                .inner_margin(Margin::symmetric(16, 14))
                 .show(ui, |ui| {
                     let dock = ui.max_rect();
                     ui.painter_at(dock).rect_filled(
@@ -2120,37 +2314,46 @@ impl ClawGui {
                         .min_size(Vec2::new(stop_w, row_h));
                         if ui
                             .add_enabled(stop_enabled, stop_btn)
-                            .on_hover_text("Stop streaming (available while the reply is streaming)")
+                            .on_hover_text(
+                                "Stop streaming (Esc also cancels while the reply is streaming)",
+                            )
                             .clicked()
                         {
                             self.stop_generation();
                         }
 
+                        let composer_font =
+                            egui::FontId::proportional(self.settings.font_size.clamp(10.0, 28.0));
                         egui::Frame::default()
                             .fill(t.input)
                             .corner_radius(14)
                             .stroke(egui::Stroke::new(1.5, t.border.linear_multiply(0.95)))
-                            .inner_margin(Margin::symmetric(14, 12))
+                            .inner_margin(Margin::symmetric(12, 10))
                             .show(ui, |ui| {
                                 ui.set_width(composer_w);
-                                ui.set_min_height(72.0);
+                                ui.set_min_height(64.0);
                                 let out = egui::TextEdit::multiline(&mut self.input)
                                     .id_salt("claw_composer")
+                                    .font(composer_font)
                                     .return_key(egui::KeyboardShortcut::new(
                                         egui::Modifiers::SHIFT,
                                         egui::Key::Enter,
                                     ))
                                     .hint_text(
                                         egui::RichText::new(
-                                            "Write a message…  ·  Enter to send  ·  Shift+Enter new line",
+                                            "Message…  ·  Enter send  ·  Shift+Enter newline",
                                         )
-                                        .size(13.5)
+                                        .size(13.0)
                                         .color(t.text_dim),
                                     )
                                     .desired_width(ui.available_width())
-                                    .desired_rows(5)
+                                    .desired_rows(4)
                                     .frame(false)
                                     .show(ui);
+                                if self.composer_request_focus {
+                                    out.response.request_focus();
+                                    self.composer_request_focus = false;
+                                }
                                 let can_send = !self.is_loading
                                     && !self.is_probing_tools
                                     && !self.input.trim().is_empty();
@@ -2316,9 +2519,9 @@ impl ClawGui {
                                                         egui::RichText::new(" STREAMING ")
                                                             .size(9.0)
                                                             .strong()
-                                                            .color(t.panel)
+                                                            .color(t.accent)
                                                             .background_color(
-                                                                t.accent.linear_multiply(0.42),
+                                                                t.border.linear_multiply(0.75),
                                                             ),
                                                     );
                                                 }
